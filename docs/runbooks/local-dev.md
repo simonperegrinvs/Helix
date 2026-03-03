@@ -10,6 +10,21 @@
 
 ```bash
 bun install
+bun run dev
+```
+
+App + API are served from: `http://localhost:8787`
+
+In this mode, frontend assets are built once at startup.
+After frontend changes, rebuild assets with:
+
+```bash
+bun run dev:web:build
+```
+
+Optional HMR mode (two terminals, two ports):
+
+```bash
 bun run dev:server
 bun run dev:web
 ```

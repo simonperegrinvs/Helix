@@ -5,9 +5,10 @@
   "description": "Vault-first research platform (UI-first, MCP-secondary)",
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "dev": "bun run --filter @helix/server dev & bun run --filter @helix/web dev",
+    "dev": "bun run --filter @helix/web build && bun run --filter @helix/server dev",
     "dev:server": "bun run --filter @helix/server dev",
     "dev:web": "bun run --filter @helix/web dev",
+    "dev:web:build": "bun run --filter @helix/web build",
     "build": "bun run --filter @helix/contracts build && bun run --filter @helix/shared-kernel build && bun run --filter @helix/server build && bun run --filter @helix/web build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "biome check .",

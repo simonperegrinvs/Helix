@@ -22,12 +22,24 @@ Helix is a vault-first research platform for long-running, evidence-grounded AI 
 
 ```bash
 bun install
+bun run dev
+```
+
+App + API default: `http://localhost:8787`
+
+`bun run dev` builds the frontend once, then starts the backend in watch mode serving `apps/web/dist`.
+Frontend edits require rebuilding with:
+
+```bash
+bun run dev:web:build
+```
+
+Optional HMR mode (two terminals, two ports):
+
+```bash
 bun run dev:server
 bun run dev:web
 ```
-
-Server defaults: `http://localhost:8787`
-Web defaults: `http://localhost:5173`
 
 ## Test commands
 

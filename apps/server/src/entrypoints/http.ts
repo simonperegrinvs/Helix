@@ -1,8 +1,38 @@
+import { access } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DomainError } from "@helix/shared-kernel";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { AppContainer } from "../shared/infrastructure/app-container";
+
+const currentDir = dirname(fileURLToPath(import.meta.url));
+const webDistDir = resolve(currentDir, "../../../../apps/web/dist");
+const webIndexPath = resolve(webDistDir, "index.html");
+
+const safeResolveWebPath = (requestPath: string): string | null => {
+  const normalized = requestPath === "/" ? "index.html" : requestPath.slice(1);
+  const absolutePath = resolve(webDistDir, normalized);
+  const webRootPrefix = `${webDistDir}${sep}`;
+
+  if (absolutePath !== webDistDir && !absolutePath.startsWith(webRootPrefix)) {
+    return null;
+  }
+
+  return absolutePath;
+};
+
+const readWebFile = async (absolutePath: string): Promise<Response | null> => {
+  try {
+    await access(absolutePath);
+    const file = Bun.file(absolutePath);
+    const contentType = file.type;
+    return new Response(file, contentType ? { headers: { "Content-Type": contentType } } : {});
+  } catch {
+    return null;
+  }
+};
 
 export const createHttpApp = (container: AppContainer = new AppContainer()): Hono => {
   const app = new Hono();
@@ -223,6 +253,34 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
       Number(c.req.query("limit") ?? 30),
     );
     return c.json({ events });
+  });
+
+  app.get("*", async (c) => {
+    const assetPath = safeResolveWebPath(c.req.path);
+    if (assetPath) {
+      const assetResponse = await readWebFile(assetPath);
+      if (assetResponse) {
+        return assetResponse;
+      }
+    }
+
+    const acceptsHtml = c.req.header("accept")?.includes("text/html") ?? false;
+    if (!acceptsHtml) {
+      return c.notFound();
+    }
+
+    const indexResponse = await readWebFile(webIndexPath);
+    if (indexResponse) {
+      return indexResponse;
+    }
+
+    return c.json(
+      {
+        error:
+          "Web app build not found. Run `bun run --filter @helix/web build` before starting the server.",
+      },
+      503,
+    );
   });
 
   app.onError((error, c) => {
