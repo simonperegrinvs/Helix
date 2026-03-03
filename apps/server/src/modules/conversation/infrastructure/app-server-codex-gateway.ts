@@ -12,6 +12,7 @@ export class AppServerCodexGateway implements CodexGateway {
     projectId: string;
     threadId: string;
     packet: PromptPacket;
+    signal?: AbortSignal;
   }): AsyncGenerator<CodexStreamEvent, void, void> {
     const child = Bun.spawn(["codex", "app-server"], {
       stdin: "pipe",
@@ -34,55 +35,75 @@ export class AppServerCodexGateway implements CodexGateway {
 
     child.stdin.write(`${JSON.stringify(request)}\n`);
 
+    const abortChild = () => {
+      try {
+        child.kill();
+      } catch {
+        // Best-effort abort.
+      }
+    };
+    if (input.signal) {
+      input.signal.addEventListener("abort", abortChild, { once: true });
+    }
+
     const decoder = new TextDecoder();
     const reader = child.stdout.getReader();
     let pending = "";
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      pending += decoder.decode(value, { stream: true });
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
+    try {
+      while (true) {
+        if (input.signal?.aborted) {
+          return;
+        }
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
         }
 
-        try {
-          const message = JSON.parse(trimmed) as Record<string, unknown>;
-          const deltaText = this.extractDeltaText(message);
-          if (deltaText) {
-            yield { type: "token", text: deltaText };
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
           }
 
-          if (message.method === "turn/completed" || message.type === "done") {
-            yield { type: "done" };
-            await child.stdin.end();
-            return;
+          try {
+            const message = JSON.parse(trimmed) as Record<string, unknown>;
+            const deltaText = this.extractDeltaText(message);
+            if (deltaText) {
+              yield { type: "token", text: deltaText };
+            }
+
+            if (message.method === "turn/completed" || message.type === "done") {
+              yield { type: "done" };
+              await child.stdin.end();
+              return;
+            }
+          } catch {
+            yield { type: "token", text: trimmed };
           }
-        } catch {
-          yield { type: "token", text: trimmed };
         }
       }
+
+      const stderrText = decoder.decode(await new Response(child.stderr).arrayBuffer()).trim();
+      await child.exited;
+
+      if (stderrText.length > 0) {
+        yield {
+          type: "message",
+          text: `Codex app-server stderr: ${stderrText}`,
+        };
+      }
+
+      yield { type: "done" };
+    } finally {
+      if (input.signal) {
+        input.signal.removeEventListener("abort", abortChild);
+      }
     }
-
-    const stderrText = decoder.decode(await new Response(child.stderr).arrayBuffer()).trim();
-    await child.exited;
-
-    if (stderrText.length > 0) {
-      yield {
-        type: "message",
-        text: `Codex app-server stderr: ${stderrText}`,
-      };
-    }
-
-    yield { type: "done" };
   }
 
   private extractDeltaText(message: Record<string, unknown>): string | undefined {

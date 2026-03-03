@@ -153,4 +153,51 @@ describe("Knowledge patch and synthesis flow", () => {
     expect(synthesisDraft.generatedBy).toBe("codex");
     expect(synthesisDraft.content).toContain("# Current Synthesis");
   });
+
+  test("streams findings and synthesis draft progress", async () => {
+    const streamingFinding = ctx.container.knowledgeApi.registerFinding({
+      projectId,
+      statement: "Streaming synthesis seed finding.",
+      status: "tentative",
+      citations: [
+        {
+          filePath: "04-synthesis/current-synthesis.md",
+          heading: "Current Synthesis",
+          startLine: 1,
+          endLine: 2,
+          excerpt: "Evidence-backed summary.",
+          sourceType: "synthesis",
+          confidence: 0.8,
+        },
+      ],
+      ingress: "http",
+      actor: "test",
+    });
+
+    const findingsEvents: string[] = [];
+    for await (const event of ctx.container.knowledgeApi.streamDraftFindings({
+      projectId,
+      maxItems: 2,
+      ingress: "http",
+      actor: "test",
+    })) {
+      findingsEvents.push(event.type);
+    }
+    expect(findingsEvents.includes("stage")).toBe(true);
+    expect(findingsEvents.includes("token")).toBe(true);
+    expect(findingsEvents.includes("done")).toBe(true);
+
+    const synthesisEvents: string[] = [];
+    for await (const event of ctx.container.knowledgeApi.streamDraftSynthesis({
+      projectId,
+      selectedFindingIds: [streamingFinding.findingId],
+      ingress: "http",
+      actor: "test",
+    })) {
+      synthesisEvents.push(event.type);
+    }
+    expect(synthesisEvents.includes("stage")).toBe(true);
+    expect(synthesisEvents.includes("token")).toBe(true);
+    expect(synthesisEvents.includes("done")).toBe(true);
+  });
 });

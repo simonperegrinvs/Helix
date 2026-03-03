@@ -29,6 +29,40 @@ const getJson = async (baseUrl, path) => {
   return response.json();
 };
 
+const postStreamJson = async (baseUrl, path, body) => {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    assert.fail(await response.text());
+  }
+
+  const text = await response.text();
+  const chunks = text.split("\n\n");
+  for (const chunk of chunks) {
+    if (!chunk.includes("event: done")) {
+      continue;
+    }
+    const dataLine = chunk
+      .split("\n")
+      .find((line) => line.startsWith("data:"))
+      ?.replace("data:", "")
+      .trim();
+    if (!dataLine) {
+      continue;
+    }
+
+    const parsed = JSON.parse(dataLine);
+    return parsed.result;
+  }
+
+  assert.fail(`No done event in stream response: ${text.slice(0, 500)}`);
+};
+
 const uniqueName = (prefix) => `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 
 const callMcpTool = async (env, name, args) => {
@@ -168,9 +202,9 @@ When("the user asks a research question", async function () {
 });
 
 When("the user asks for more research directions", async function () {
-  this.draft = await postJson(
+  this.draft = await postStreamJson(
     this.baseUrl,
-    `/api/projects/${this.projectId}/external-query/draft`,
+    `/api/projects/${this.projectId}/external-query/draft/stream`,
     {
       goal: "Find contradictory evidence and new references",
     },
@@ -234,7 +268,8 @@ Then("the import is recorded in the audit trail", async function () {
 });
 
 Then("the answer contains citations to project evidence", function () {
-  assert.match(this.chatResult, /event: metadata/);
+  assert.match(this.chatResult, /event: artifact/);
+  assert.match(this.chatResult, /\"name\":\"metadata\"/);
 });
 
 Then("the conversation summary is persisted", async function () {

@@ -17,7 +17,11 @@ Read-only:
 
 Mutating/propose:
 
-- `external_query.draft`
+- `ai.chat.start`
+- `ai.findings_draft.start`
+- `ai.synthesis_draft.start`
+- `ai.external_query_draft.start`
+- `ai.job.get` (read-only status/result polling)
 - `external_query.trigger`
 - `import_report.register`
 - `knowledge.propose_patch`

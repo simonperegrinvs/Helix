@@ -2,7 +2,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FindingDraftSuggestion, api } from "../../lib/api";
+import {
+  type FindingDraftSuggestion,
+  type FindingsDraftResult,
+  type SynthesisDraftResult,
+  api,
+  streamFindingsDraft,
+  streamSynthesisDraft,
+} from "../../lib/api";
+import { AiProgressPanel } from "../ai-progress/AiProgressPanel";
+import { useAiRun } from "../ai-progress/useAiRun";
 
 export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
   const queryClient = useQueryClient();
@@ -22,17 +31,13 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
   const [proposalId, setProposalId] = useState("");
   const [approvalToken, setApprovalToken] = useState("");
 
+  const findingsRun = useAiRun<FindingsDraftResult>();
+  const synthesisRun = useAiRun<SynthesisDraftResult>();
+
   const updateSynthesisMutation = useMutation({
     mutationFn: () => api.updateSynthesis(projectId, { content: draft, confidence: 0.7 }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["synthesis", projectId] });
-    },
-  });
-
-  const draftFindingsMutation = useMutation({
-    mutationFn: () => api.draftFindings(projectId, { maxItems: 5 }),
-    onSuccess: (result) => {
-      setDraftSuggestions(result.suggestions);
     },
   });
 
@@ -47,13 +52,6 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["findings", projectId] });
-    },
-  });
-
-  const draftSynthesisMutation = useMutation({
-    mutationFn: () => api.draftSynthesis(projectId, { selectedFindingIds }),
-    onSuccess: (result) => {
-      setDraft(result.content);
     },
   });
 
@@ -86,6 +84,24 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
     );
   };
 
+  const generateFindings = async () => {
+    const result = await findingsRun.start((onEvent, signal) =>
+      streamFindingsDraft(projectId, { maxItems: 5 }, onEvent, signal),
+    );
+    if (result) {
+      setDraftSuggestions(result.suggestions);
+    }
+  };
+
+  const generateSynthesis = async () => {
+    const result = await synthesisRun.start((onEvent, signal) =>
+      streamSynthesisDraft(projectId, { selectedFindingIds }, onEvent, signal),
+    );
+    if (result) {
+      setDraft(result.content);
+    }
+  };
+
   const approveSuggestion = async (index: number, suggestion: FindingDraftSuggestion) => {
     await createFindingMutation.mutateAsync(suggestion);
     setDraftSuggestions((current) => current.filter((_, itemIndex) => itemIndex !== index));
@@ -109,12 +125,20 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
           <button
             type="button"
             className="primary"
-            onClick={() => draftFindingsMutation.mutate()}
-            disabled={draftFindingsMutation.isPending}
+            onClick={generateFindings}
+            disabled={findingsRun.run.status === "running"}
           >
-            {draftFindingsMutation.isPending ? "Generating..." : "Generate Findings (AI)"}
+            {findingsRun.run.status === "running" ? "Generating..." : "Generate Findings (AI)"}
           </button>
         </div>
+
+        <AiProgressPanel
+          title="Findings Generation"
+          run={findingsRun.run}
+          elapsedMs={findingsRun.elapsedMs}
+          onCancel={findingsRun.cancel}
+        />
+
         {draftSuggestions.length === 0 ? (
           <p className="muted">No draft suggestions yet.</p>
         ) : (
@@ -122,7 +146,7 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
             <div className="card" key={`${suggestion.statement}-${index}`}>
               <p>{suggestion.statement}</p>
               <p className="muted">
-                Status: {suggestion.status} ·{" "}
+                Status: {suggestion.status} · {" "}
                 {suggestion.isHypothesis ? "Hypothesis" : "Evidence-backed"} · Citations:{" "}
                 {suggestion.citations.length}
               </p>
@@ -161,12 +185,20 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
           <h3>Current Findings ({findings.length})</h3>
           <button
             type="button"
-            onClick={() => draftSynthesisMutation.mutate()}
-            disabled={selectedCount === 0 || draftSynthesisMutation.isPending}
+            onClick={generateSynthesis}
+            disabled={selectedCount === 0 || synthesisRun.run.status === "running"}
           >
-            {draftSynthesisMutation.isPending ? "Drafting..." : "Generate Synthesis Draft (AI)"}
+            {synthesisRun.run.status === "running" ? "Drafting..." : "Generate Synthesis Draft (AI)"}
           </button>
         </div>
+
+        <AiProgressPanel
+          title="Synthesis Draft Generation"
+          run={synthesisRun.run}
+          elapsedMs={synthesisRun.elapsedMs}
+          onCancel={synthesisRun.cancel}
+        />
+
         {findings.map((finding) => (
           <label className="finding-row" key={finding.findingId}>
             <input

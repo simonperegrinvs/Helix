@@ -71,3 +71,53 @@ export interface AuditEvent {
 export interface RetrievedContextItem extends Citation {
   chunkId: string;
 }
+
+export type AiStreamAction =
+  | "chat_turn"
+  | "findings_draft"
+  | "synthesis_draft"
+  | "external_query_draft";
+
+export interface AiStageEvent {
+  type: "stage";
+  action: AiStreamAction;
+  stage: string;
+  message: string;
+  percent: number;
+  at: string;
+}
+
+export interface AiTokenEvent {
+  type: "token";
+  action: AiStreamAction;
+  text: string;
+}
+
+export interface AiArtifactEvent {
+  type: "artifact";
+  action: AiStreamAction;
+  name: string;
+  data: unknown;
+}
+
+export interface AiDoneEvent<TResult = unknown> {
+  type: "done";
+  action: AiStreamAction;
+  result: TResult;
+  source?: "codex" | "fallback";
+  durationMs: number;
+}
+
+export interface AiErrorEvent {
+  type: "error";
+  action: AiStreamAction;
+  error: string;
+  code?: string;
+}
+
+export type AiStreamEvent<TResult = unknown> =
+  | AiStageEvent
+  | AiTokenEvent
+  | AiArtifactEvent
+  | AiDoneEvent<TResult>
+  | AiErrorEvent;

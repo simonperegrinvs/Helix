@@ -35,11 +35,13 @@ describe("MCP interface tools", () => {
   test("exposes required tool surface", () => {
     const tools = ctx.container.mcpInterfaceApi.listTools();
     expect(tools.some((tool) => tool.name === "project.search")).toBe(true);
+    expect(tools.some((tool) => tool.name === "ai.chat.start")).toBe(true);
+    expect(tools.some((tool) => tool.name === "ai.job.get")).toBe(true);
     expect(tools.some((tool) => tool.name === "knowledge.apply_patch")).toBe(true);
     expect(tools.some((tool) => tool.name === "external_query.trigger")).toBe(true);
   });
 
-  test("handles read and write tools through shared services", async () => {
+  test("handles read and async AI tools through shared services", async () => {
     const projects = await ctx.container.mcpInterfaceApi.handleToolCall({
       name: "projects.list",
       args: {},
@@ -54,15 +56,41 @@ describe("MCP interface tools", () => {
     })) as Array<{ filePath: string }>;
     expect(search.length).toBeGreaterThan(0);
 
-    const draft = (await ctx.container.mcpInterfaceApi.handleToolCall({
-      name: "external_query.draft",
+    const start = (await ctx.container.mcpInterfaceApi.handleToolCall({
+      name: "ai.external_query_draft.start",
       args: { projectId, goal: "Find new references" },
       actor: "mcp-test",
-    })) as { queryDraftId: string };
+    })) as { jobId: string; status: string };
+    expect(start.status).toBe("running");
+
+    let job = (await ctx.container.mcpInterfaceApi.handleToolCall({
+      name: "ai.job.get",
+      args: { projectId, jobId: start.jobId },
+      actor: "mcp-test",
+    })) as {
+      status: string;
+      result?: { draft?: { queryDraftId?: string } };
+    };
+
+    for (let attempt = 0; attempt < 30 && job.status === "running"; attempt += 1) {
+      await Bun.sleep(10);
+      job = (await ctx.container.mcpInterfaceApi.handleToolCall({
+        name: "ai.job.get",
+        args: { projectId, jobId: start.jobId },
+        actor: "mcp-test",
+      })) as {
+        status: string;
+        result?: { draft?: { queryDraftId?: string } };
+      };
+    }
+
+    expect(job.status).toBe("succeeded");
+    const queryDraftId = job.result?.draft?.queryDraftId;
+    expect(queryDraftId).toBeTruthy();
 
     const trigger = (await ctx.container.mcpInterfaceApi.handleToolCall({
       name: "external_query.trigger",
-      args: { projectId, queryDraftId: draft.queryDraftId },
+      args: { projectId, queryDraftId },
       actor: "mcp-test",
     })) as { accepted: boolean };
 

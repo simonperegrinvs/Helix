@@ -85,6 +85,166 @@ export interface ExternalQueryDraft {
   status: "draft" | "approved" | "triggered";
 }
 
+export type AiStreamAction =
+  | "chat_turn"
+  | "findings_draft"
+  | "synthesis_draft"
+  | "external_query_draft";
+
+export interface AiStageEvent {
+  type: "stage";
+  action: AiStreamAction;
+  stage: string;
+  message: string;
+  percent: number;
+  at: string;
+}
+
+export interface AiTokenEvent {
+  type: "token";
+  action: AiStreamAction;
+  text: string;
+}
+
+export interface AiArtifactEvent {
+  type: "artifact";
+  action: AiStreamAction;
+  name: string;
+  data: unknown;
+}
+
+export interface AiDoneEvent<TResult> {
+  type: "done";
+  action: AiStreamAction;
+  source?: "codex" | "fallback";
+  durationMs: number;
+  result: TResult;
+}
+
+export interface AiErrorEvent {
+  type: "error";
+  action: AiStreamAction;
+  error: string;
+  code?: string;
+}
+
+export type AiStreamEvent<TResult> =
+  | AiStageEvent
+  | AiTokenEvent
+  | AiArtifactEvent
+  | AiDoneEvent<TResult>
+  | AiErrorEvent;
+
+export interface FindingsDraftResult {
+  suggestions: FindingDraftSuggestion[];
+  generatedBy: "codex";
+}
+
+export interface SynthesisDraftResult {
+  content: string;
+  confidence: number;
+  citations: Citation[];
+  generatedBy: "codex";
+}
+
+export interface ExternalQueryDraftResult {
+  draft: ExternalQueryDraft;
+}
+
+export interface ChatTurnResult {
+  response: string;
+  turnId: string;
+  threadId: string;
+  citations: Array<{ filePath: string; heading: string }>;
+}
+
+const parseSseChunk = (chunk: string): { event: string; data: string } | null => {
+  const lines = chunk.split("\n");
+  let eventName = "message";
+  const dataParts: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice("event:".length).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataParts.push(line.slice("data:".length).trim());
+    }
+  }
+
+  if (dataParts.length === 0) {
+    return null;
+  }
+
+  return {
+    event: eventName,
+    data: dataParts.join("\n"),
+  };
+};
+
+const streamAction = async <TResult>(
+  path: string,
+  body: unknown,
+  onEvent: (event: AiStreamEvent<TResult>) => void,
+  signal?: AbortSignal,
+): Promise<TResult> => {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Unable to stream action: ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let doneResult: TResult | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (buffer.includes("\n\n")) {
+      const splitIndex = buffer.indexOf("\n\n");
+      const chunk = buffer.slice(0, splitIndex);
+      buffer = buffer.slice(splitIndex + 2);
+
+      const parsedChunk = parseSseChunk(chunk);
+      if (!parsedChunk) {
+        continue;
+      }
+
+      const parsedEvent = JSON.parse(parsedChunk.data) as AiStreamEvent<TResult>;
+      onEvent(parsedEvent);
+
+      if (parsedEvent.type === "error") {
+        throw new Error(parsedEvent.error);
+      }
+
+      if (parsedEvent.type === "done") {
+        doneResult = parsedEvent.result;
+      }
+    }
+  }
+
+  if (!doneResult) {
+    throw new Error("Stream ended before completion");
+  }
+
+  return doneResult;
+};
+
 export const api = {
   listProjects: () => request<{ projects: ResearchProject[] }>("/api/projects"),
   createProject: (body: { name: string; vaultRoot?: string }) =>
@@ -128,32 +288,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  draftFindings: (projectId: string, body: { maxItems?: number }) =>
-    request<{ suggestions: FindingDraftSuggestion[]; generatedBy: "codex" }>(
-      `/api/projects/${projectId}/findings/draft`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
   getSynthesis: (projectId: string) =>
     request<{ doc: unknown; content: string }>(`/api/projects/${projectId}/synthesis`),
-  draftSynthesis: (projectId: string, body: { selectedFindingIds: string[] }) =>
-    request<{ content: string; confidence: number; citations: Citation[]; generatedBy: "codex" }>(
-      `/api/projects/${projectId}/synthesis/draft`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
   updateSynthesis: (projectId: string, body: { content: string; confidence: number }) =>
     request<{ doc: unknown }>(`/api/projects/${projectId}/synthesis`, {
       method: "PUT",
-      body: JSON.stringify(body),
-    }),
-  draftExternalQuery: (projectId: string, body: { goal: string; userRequest?: string }) =>
-    request<{ draft: ExternalQueryDraft }>(`/api/projects/${projectId}/external-query/draft`, {
-      method: "POST",
       body: JSON.stringify(body),
     }),
   listExternalDrafts: (projectId: string) =>
@@ -184,57 +323,49 @@ export const api = {
     ),
 };
 
-export const streamChat = async (
+export const streamChat = (
   projectId: string,
   input: { question: string; threadId?: string },
-  onEvent: (event: { event: string; data: unknown }) => void,
-): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/chat/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(input),
-  });
+  onEvent: (event: AiStreamEvent<ChatTurnResult>) => void,
+  signal?: AbortSignal,
+): Promise<ChatTurnResult> =>
+  streamAction<ChatTurnResult>(`/api/projects/${projectId}/chat/stream`, input, onEvent, signal);
 
-  if (!response.ok || !response.body) {
-    throw new Error(`Unable to stream chat: ${response.status}`);
-  }
+export const streamFindingsDraft = (
+  projectId: string,
+  input: { maxItems?: number },
+  onEvent: (event: AiStreamEvent<FindingsDraftResult>) => void,
+  signal?: AbortSignal,
+): Promise<FindingsDraftResult> =>
+  streamAction<FindingsDraftResult>(
+    `/api/projects/${projectId}/findings/draft/stream`,
+    input,
+    onEvent,
+    signal,
+  );
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+export const streamSynthesisDraft = (
+  projectId: string,
+  input: { selectedFindingIds: string[] },
+  onEvent: (event: AiStreamEvent<SynthesisDraftResult>) => void,
+  signal?: AbortSignal,
+): Promise<SynthesisDraftResult> =>
+  streamAction<SynthesisDraftResult>(
+    `/api/projects/${projectId}/synthesis/draft/stream`,
+    input,
+    onEvent,
+    signal,
+  );
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    while (buffer.includes("\n\n")) {
-      const splitIndex = buffer.indexOf("\n\n");
-      const chunk = buffer.slice(0, splitIndex);
-      buffer = buffer.slice(splitIndex + 2);
-
-      const eventLine = chunk
-        .split("\n")
-        .find((line) => line.startsWith("event:"))
-        ?.replace("event:", "")
-        .trim();
-      const dataLine = chunk
-        .split("\n")
-        .find((line) => line.startsWith("data:"))
-        ?.replace("data:", "")
-        .trim();
-
-      if (eventLine && dataLine) {
-        onEvent({
-          event: eventLine,
-          data: JSON.parse(dataLine),
-        });
-      }
-    }
-  }
-};
+export const streamExternalQueryDraft = (
+  projectId: string,
+  input: { goal: string; userRequest?: string },
+  onEvent: (event: AiStreamEvent<ExternalQueryDraftResult>) => void,
+  signal?: AbortSignal,
+): Promise<ExternalQueryDraftResult> =>
+  streamAction<ExternalQueryDraftResult>(
+    `/api/projects/${projectId}/external-query/draft/stream`,
+    input,
+    onEvent,
+    signal,
+  );

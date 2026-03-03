@@ -1,22 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { type ExternalQueryDraft, api } from "../../lib/api";
+import {
+  type ExternalQueryDraft,
+  type ExternalQueryDraftResult,
+  api,
+  streamExternalQueryDraft,
+} from "../../lib/api";
+import { AiProgressPanel } from "../ai-progress/AiProgressPanel";
+import { useAiRun } from "../ai-progress/useAiRun";
 
 export const ExternalResearchPage = ({ projectId }: { projectId: string }) => {
   const [goal, setGoal] = useState("Identify contradictory evidence and missing references");
   const [selectedDraft, setSelectedDraft] = useState<ExternalQueryDraft | null>(null);
   const queryClient = useQueryClient();
+  const draftRun = useAiRun<ExternalQueryDraftResult>();
 
   const draftsQuery = useQuery({
     queryKey: ["external-drafts", projectId],
     queryFn: () => api.listExternalDrafts(projectId),
-  });
-
-  const draftMutation = useMutation({
-    mutationFn: () => api.draftExternalQuery(projectId, { goal }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["external-drafts", projectId] });
-    },
   });
 
   const triggerMutation = useMutation({
@@ -25,6 +26,17 @@ export const ExternalResearchPage = ({ projectId }: { projectId: string }) => {
       queryClient.invalidateQueries({ queryKey: ["external-drafts", projectId] });
     },
   });
+
+  const draftQueryPackage = async () => {
+    const result = await draftRun.start((onEvent, signal) =>
+      streamExternalQueryDraft(projectId, { goal }, onEvent, signal),
+    );
+
+    if (result?.draft) {
+      queryClient.invalidateQueries({ queryKey: ["external-drafts", projectId] });
+      setSelectedDraft(result.draft);
+    }
+  };
 
   return (
     <div className="surface grid">
@@ -38,11 +50,18 @@ export const ExternalResearchPage = ({ projectId }: { projectId: string }) => {
         <button
           type="button"
           className="primary"
-          onClick={() => draftMutation.mutate()}
-          disabled={draftMutation.isPending}
+          onClick={draftQueryPackage}
+          disabled={draftRun.run.status === "running"}
         >
-          {draftMutation.isPending ? "Drafting..." : "Draft Query Package"}
+          {draftRun.run.status === "running" ? "Drafting..." : "Draft Query Package"}
         </button>
+
+        <AiProgressPanel
+          title="External Query Draft"
+          run={draftRun.run}
+          elapsedMs={draftRun.elapsedMs}
+          onCancel={draftRun.cancel}
+        />
       </div>
 
       <div className="grid">

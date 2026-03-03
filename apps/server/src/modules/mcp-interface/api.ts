@@ -1,4 +1,7 @@
+import type { AiStreamEvent } from "@helix/contracts";
+import { nowIso, randomId } from "@helix/shared-kernel";
 import type { AuditDocsApi } from "../audit-docs/api";
+import type { ConversationApi } from "../conversation/api";
 import type { ExternalResearchApi } from "../external-research/api";
 import type { KnowledgeApi } from "../knowledge/api";
 import type { ReportImportApi } from "../report-import/api";
@@ -11,13 +14,38 @@ interface ToolCallInput {
   actor?: string;
 }
 
+type AiJobStatus = "running" | "succeeded" | "failed";
+type AiJobAction = "chat_turn" | "findings_draft" | "synthesis_draft" | "external_query_draft";
+
+interface AiJobRecord {
+  jobId: string;
+  projectId: string;
+  action: AiJobAction;
+  status: AiJobStatus;
+  startedAt: string;
+  updatedAt: string;
+  latestStage: string;
+  percent: number;
+  tokenPreview: string;
+  events: AiStreamEvent[];
+  result?: unknown;
+  error?: string;
+}
+
+const MAX_JOB_EVENTS = 50;
+const MAX_TOKEN_PREVIEW = 1200;
+const FINISHED_JOB_TTL_MS = 30 * 60_000;
+
 export class McpInterfaceApi {
+  private readonly jobs = new Map<string, AiJobRecord>();
+
   constructor(
     private readonly workspaceApi: WorkspaceApi,
     private readonly retrievalApi: RetrievalApi,
     private readonly knowledgeApi: KnowledgeApi,
     private readonly reportImportApi: ReportImportApi,
     private readonly externalResearchApi: ExternalResearchApi,
+    private readonly conversationApi: ConversationApi,
     private readonly auditApi: AuditDocsApi,
   ) {}
 
@@ -35,9 +63,25 @@ export class McpInterfaceApi {
       { name: "reports.list", description: "List imported reports", readOnly: true },
       { name: "reports.get", description: "Get one report", readOnly: true },
       { name: "audit.tail", description: "Tail project audit events", readOnly: true },
+      { name: "ai.job.get", description: "Get async AI job status and result", readOnly: true },
       {
-        name: "external_query.draft",
-        description: "Create reviewable query draft",
+        name: "ai.chat.start",
+        description: "Start async grounded chat generation",
+        readOnly: false,
+      },
+      {
+        name: "ai.findings_draft.start",
+        description: "Start async findings draft generation",
+        readOnly: false,
+      },
+      {
+        name: "ai.synthesis_draft.start",
+        description: "Start async synthesis draft generation",
+        readOnly: false,
+      },
+      {
+        name: "ai.external_query_draft.start",
+        description: "Start async external query package generation",
         readOnly: false,
       },
       {
@@ -130,13 +174,80 @@ export class McpInterfaceApi {
           break;
         }
 
-        case "external_query.draft": {
-          result = await this.externalResearchApi.draftResearchQuery({
-            projectId: this.projectId(input.args),
-            goal: String(input.args.goal ?? "Research gap follow-up"),
-            userRequest: input.args.userRequest ? String(input.args.userRequest) : undefined,
-            ingress: "mcp",
-            actor: input.actor,
+        case "ai.job.get": {
+          const projectId = this.projectId(input.args);
+          const jobId = String(input.args.jobId ?? "");
+          result = this.getJob(projectId, jobId);
+          break;
+        }
+
+        case "ai.chat.start": {
+          const projectId = this.projectId(input.args);
+          const question = String(input.args.question ?? "");
+          const threadId = input.args.threadId ? String(input.args.threadId) : undefined;
+          result = this.startJob({
+            projectId,
+            action: "chat_turn",
+            stream: () =>
+              this.streamChatJob({
+                projectId,
+                question,
+                threadId,
+                actor: input.actor,
+              }),
+          });
+          break;
+        }
+
+        case "ai.findings_draft.start": {
+          const projectId = this.projectId(input.args);
+          const maxItems = Number(input.args.maxItems ?? 5);
+          result = this.startJob({
+            projectId,
+            action: "findings_draft",
+            stream: () =>
+              this.knowledgeApi.streamDraftFindings({
+                projectId,
+                maxItems,
+                ingress: "mcp",
+                actor: input.actor,
+              }),
+          });
+          break;
+        }
+
+        case "ai.synthesis_draft.start": {
+          const projectId = this.projectId(input.args);
+          const selectedFindingIds = Array.isArray(input.args.selectedFindingIds)
+            ? input.args.selectedFindingIds.map((item) => String(item))
+            : [];
+          result = this.startJob({
+            projectId,
+            action: "synthesis_draft",
+            stream: () =>
+              this.knowledgeApi.streamDraftSynthesis({
+                projectId,
+                selectedFindingIds,
+                ingress: "mcp",
+                actor: input.actor,
+              }),
+          });
+          break;
+        }
+
+        case "ai.external_query_draft.start": {
+          const projectId = this.projectId(input.args);
+          result = this.startJob({
+            projectId,
+            action: "external_query_draft",
+            stream: () =>
+              this.externalResearchApi.streamDraftResearchQuery({
+                projectId,
+                goal: String(input.args.goal ?? "Research gap follow-up"),
+                userRequest: input.args.userRequest ? String(input.args.userRequest) : undefined,
+                ingress: "mcp",
+                actor: input.actor,
+              }),
           });
           break;
         }
@@ -215,6 +326,229 @@ export class McpInterfaceApi {
         },
       });
       throw error;
+    }
+  }
+
+  private startJob(input: {
+    projectId: string;
+    action: AiJobAction;
+    stream: () => AsyncGenerator<AiStreamEvent>;
+  }): { jobId: string; status: AiJobStatus; action: AiJobAction } {
+    this.pruneJobs();
+
+    const startedAt = nowIso();
+    const record: AiJobRecord = {
+      jobId: randomId("ai_job"),
+      projectId: input.projectId,
+      action: input.action,
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      latestStage: "queued",
+      percent: 0,
+      tokenPreview: "",
+      events: [],
+    };
+
+    this.jobs.set(record.jobId, record);
+    void this.runJob(record, input.stream);
+
+    return {
+      jobId: record.jobId,
+      status: record.status,
+      action: record.action,
+    };
+  }
+
+  private async runJob(
+    record: AiJobRecord,
+    streamFactory: () => AsyncGenerator<AiStreamEvent>,
+  ): Promise<void> {
+    try {
+      for await (const event of streamFactory()) {
+        this.pushEvent(record, event);
+
+        if (event.type === "done") {
+          record.status = "succeeded";
+          record.result = event.result;
+          record.percent = 100;
+          record.updatedAt = nowIso();
+          return;
+        }
+
+        if (event.type === "error") {
+          record.status = "failed";
+          record.error = event.error;
+          record.updatedAt = nowIso();
+          return;
+        }
+      }
+
+      if (record.status === "running") {
+        record.status = "failed";
+        record.error = "Job ended without a terminal event";
+        record.updatedAt = nowIso();
+      }
+    } catch (error) {
+      record.status = "failed";
+      record.error = error instanceof Error ? error.message : String(error);
+      record.events.push({
+        type: "error",
+        action: record.action,
+        error: record.error,
+      });
+      record.updatedAt = nowIso();
+    }
+  }
+
+  private pushEvent(record: AiJobRecord, event: AiStreamEvent): void {
+    record.events.push(event);
+    if (record.events.length > MAX_JOB_EVENTS) {
+      record.events.splice(0, record.events.length - MAX_JOB_EVENTS);
+    }
+
+    if (event.type === "stage") {
+      record.latestStage = event.stage;
+      record.percent = event.percent;
+    }
+
+    if (event.type === "token") {
+      const combined = `${record.tokenPreview}${event.text}`;
+      record.tokenPreview = combined.slice(-MAX_TOKEN_PREVIEW);
+    }
+
+    if (event.type === "error") {
+      record.error = event.error;
+    }
+
+    if (event.type === "done") {
+      record.result = event.result;
+      record.percent = 100;
+      record.latestStage = "done";
+    }
+
+    record.updatedAt = nowIso();
+  }
+
+  private getJob(projectId: string, jobId: string): unknown {
+    this.pruneJobs();
+
+    const job = this.jobs.get(jobId);
+    if (!job || job.projectId !== projectId) {
+      throw new Error(`AI job not found: ${jobId}`);
+    }
+
+    return {
+      jobId: job.jobId,
+      action: job.action,
+      status: job.status,
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      latestStage: job.latestStage,
+      percent: job.percent,
+      tokenPreview: job.tokenPreview,
+      events: job.events,
+      result: job.result,
+      error: job.error,
+    };
+  }
+
+  private pruneJobs(): void {
+    const now = Date.now();
+    for (const [jobId, job] of this.jobs.entries()) {
+      if (job.status === "running") {
+        continue;
+      }
+      if (now - new Date(job.updatedAt).getTime() > FINISHED_JOB_TTL_MS) {
+        this.jobs.delete(jobId);
+      }
+    }
+  }
+
+  private async *streamChatJob(input: {
+    projectId: string;
+    question: string;
+    threadId?: string;
+    actor?: string;
+  }): AsyncGenerator<AiStreamEvent> {
+    const action = "chat_turn" as const;
+    const startedAt = Date.now();
+    let metadata: { turnId: string; threadId: string; citations: unknown[] } | null = null;
+
+    yield {
+      type: "stage",
+      action,
+      stage: "prepare",
+      message: "Preparing grounded response",
+      percent: 5,
+      at: nowIso(),
+    };
+
+    for await (const event of this.conversationApi.streamTurn({
+      projectId: input.projectId,
+      question: input.question,
+      threadId: input.threadId,
+      ingress: "mcp",
+      actor: input.actor,
+    })) {
+      if (event.type === "metadata") {
+        metadata = event;
+        yield {
+          type: "stage",
+          action,
+          stage: "retrieval_complete",
+          message: "Evidence retrieved",
+          percent: 40,
+          at: nowIso(),
+        };
+        yield {
+          type: "artifact",
+          action,
+          name: "metadata",
+          data: event,
+        };
+        yield {
+          type: "stage",
+          action,
+          stage: "generate",
+          message: "Generating response",
+          percent: 70,
+          at: nowIso(),
+        };
+        continue;
+      }
+
+      if (event.type === "token") {
+        yield {
+          type: "token",
+          action,
+          text: event.text,
+        };
+        continue;
+      }
+
+      if (event.type === "done") {
+        yield {
+          type: "stage",
+          action,
+          stage: "finalize",
+          message: "Finalizing response",
+          percent: 95,
+          at: nowIso(),
+        };
+        yield {
+          type: "done",
+          action,
+          source: "codex",
+          durationMs: Date.now() - startedAt,
+          result: {
+            response: event.response,
+            turnId: metadata?.turnId ?? "",
+            threadId: metadata?.threadId ?? "",
+            citations: metadata?.citations ?? [],
+          },
+        };
+      }
     }
   }
 

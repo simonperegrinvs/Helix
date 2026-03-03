@@ -5,6 +5,7 @@ export class FakeCodexGateway implements CodexGateway {
     projectId: string;
     threadId: string;
     packet: PromptPacket;
+    signal?: AbortSignal;
   }): AsyncGenerator<CodexStreamEvent, void, void> {
     const response = [
       `Working in project ${input.projectId}.`,
@@ -13,6 +14,9 @@ export class FakeCodexGateway implements CodexGateway {
     ].join(" ");
 
     for (const token of response.split(" ")) {
+      if (input.signal?.aborted) {
+        return;
+      }
       yield {
         type: "token",
         text: `${token} `,

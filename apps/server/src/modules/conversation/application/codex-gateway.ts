@@ -25,5 +25,6 @@ export interface CodexGateway {
     projectId: string;
     threadId: string;
     packet: PromptPacket;
+    signal?: AbortSignal;
   }): AsyncGenerator<CodexStreamEvent, void, void>;
 }

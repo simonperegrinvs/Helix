@@ -65,4 +65,26 @@ describe("External research flow", () => {
       }),
     ).rejects.toThrow();
   });
+
+  test("streams external query drafting progress events", async () => {
+    const events: string[] = [];
+    let draftId = "";
+
+    for await (const event of ctx.container.externalResearchApi.streamDraftResearchQuery({
+      projectId,
+      goal: "Collect contradictory sources",
+      ingress: "http",
+      actor: "test",
+    })) {
+      events.push(event.type);
+      if (event.type === "done") {
+        draftId = event.result.draft.queryDraftId;
+      }
+    }
+
+    expect(events.includes("stage")).toBe(true);
+    expect(events.includes("token")).toBe(true);
+    expect(events.includes("done")).toBe(true);
+    expect(draftId.length).toBeGreaterThan(0);
+  });
 });

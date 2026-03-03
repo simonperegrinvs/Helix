@@ -300,6 +300,47 @@ small,
   font-family: "SF Mono", Menlo, monospace;
 }
 
+.ai-progress-panel {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.ai-progress-panel progress {
+  width: 100%;
+  height: 0.75rem;
+}
+
+.ai-status {
+  text-transform: capitalize;
+}
+
+.ai-status-running {
+  background: #e8f5ef;
+}
+
+.ai-status-succeeded {
+  background: #e2f3ea;
+}
+
+.ai-status-failed {
+  background: #f9e5e5;
+}
+
+.ai-status-canceled {
+  background: #f0efea;
+}
+
+.ai-token-preview pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 0.35rem 0 0;
+}
+
+.ai-event-log {
+  border-top: 1px dashed var(--border);
+  padding-top: 0.45rem;
+}
+
 @media (max-width: 980px) {
   .workspace {
     grid-template-columns: 1fr;

@@ -1,38 +1,46 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { api, streamChat } from "../../lib/api";
-
-interface StreamEvent {
-  event: string;
-  data: unknown;
-}
+import { AiProgressPanel } from "../ai-progress/AiProgressPanel";
+import { useAiRun } from "../ai-progress/useAiRun";
+import { api, type ChatTurnResult, streamChat } from "../../lib/api";
 
 export const ProjectChatPage = ({ projectId }: { projectId: string }) => {
   const [question, setQuestion] = useState("");
   const [stream, setStream] = useState<string>("");
   const [citations, setCitations] = useState<Array<{ filePath: string; heading: string }>>([]);
+  const chatRun = useAiRun<ChatTurnResult>();
 
-  const askMutation = useMutation({
-    mutationFn: async () => {
-      setStream("");
-      await streamChat(projectId, { question }, (event: StreamEvent) => {
-        if (event.event === "metadata") {
-          const payload = event.data as {
-            citations?: Array<{ filePath: string; heading: string }>;
-          };
-          setCitations(payload.citations ?? []);
-          return;
-        }
+  const ask = async () => {
+    setStream("");
+    setCitations([]);
 
-        if (event.event === "token") {
-          const payload = event.data as { text?: string };
-          if (payload.text) {
-            setStream((previous) => `${previous}${payload.text}`);
+    const result = await chatRun.start((onEvent, signal) =>
+      streamChat(
+        projectId,
+        { question },
+        (event) => {
+          onEvent(event);
+
+          if (event.type === "artifact" && event.name === "metadata") {
+            const payload = event.data as {
+              citations?: Array<{ filePath: string; heading: string }>;
+            };
+            setCitations(payload.citations ?? []);
+            return;
           }
-        }
-      });
-    },
-  });
+
+          if (event.type === "token") {
+            setStream((previous) => `${previous}${event.text}`);
+          }
+        },
+        signal,
+      ),
+    );
+
+    if (result) {
+      setCitations(result.citations ?? []);
+    }
+  };
 
   const searchQuery = useQuery({
     queryKey: ["search-preview", projectId, question],
@@ -60,11 +68,18 @@ export const ProjectChatPage = ({ projectId }: { projectId: string }) => {
       <button
         type="button"
         className="primary"
-        disabled={!question || askMutation.isPending}
-        onClick={() => askMutation.mutate()}
+        disabled={!question || chatRun.run.status === "running"}
+        onClick={ask}
       >
-        {askMutation.isPending ? "Streaming..." : "Ask"}
+        {chatRun.run.status === "running" ? "Streaming..." : "Ask"}
       </button>
+
+      <AiProgressPanel
+        title="Chat Progress"
+        run={chatRun.run}
+        elapsedMs={chatRun.elapsedMs}
+        onCancel={chatRun.cancel}
+      />
 
       <div className="chat-stream">{stream || "No streamed response yet."}</div>
 

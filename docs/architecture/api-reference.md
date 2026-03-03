@@ -14,20 +14,29 @@
 - `GET /api/projects/:projectId/reports/:reportId/content`
 - `GET /api/projects/:projectId/findings`
 - `POST /api/projects/:projectId/findings`
-- `POST /api/projects/:projectId/findings/draft`
+- `POST /api/projects/:projectId/findings/draft/stream` (SSE)
 - `GET /api/projects/:projectId/synthesis`
 - `PUT /api/projects/:projectId/synthesis`
-- `POST /api/projects/:projectId/synthesis/draft`
+- `POST /api/projects/:projectId/synthesis/draft/stream` (SSE)
 - `GET /api/projects/:projectId/search`
 - `GET /api/projects/:projectId/threads`
 - `GET /api/projects/:projectId/threads/:threadId/turns`
 - `POST /api/projects/:projectId/chat/stream`
-- `POST /api/projects/:projectId/external-query/draft`
+- `POST /api/projects/:projectId/external-query/draft/stream` (SSE)
 - `GET /api/projects/:projectId/external-query/drafts`
 - `POST /api/projects/:projectId/external-query/trigger`
 - `POST /api/projects/:projectId/knowledge/patch/propose`
 - `POST /api/projects/:projectId/knowledge/patch/apply`
 - `GET /api/projects/:projectId/audit/events`
+
+### Streaming event contract (SSE)
+
+Long AI routes emit `event:` + `data:` messages with JSON payloads using:
+- `stage`
+- `token`
+- `artifact`
+- `done`
+- `error`
 
 ## MCP (JSON-RPC)
 

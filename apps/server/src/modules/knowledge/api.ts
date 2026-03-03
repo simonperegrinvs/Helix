@@ -1,4 +1,10 @@
-import type { Citation, Finding, RetrievedContextItem, SynthesisDocument } from "@helix/contracts";
+import type {
+  AiStreamEvent,
+  Citation,
+  Finding,
+  RetrievedContextItem,
+  SynthesisDocument,
+} from "@helix/contracts";
 import { DomainError, nowIso, randomId } from "@helix/shared-kernel";
 import { createPatch } from "diff";
 import type { DatabaseClient } from "../../shared/infrastructure/database";
@@ -41,6 +47,18 @@ export interface FindingDraftSuggestion {
   isHypothesis: boolean;
   citations: Citation[];
   tags: string[];
+}
+
+export interface FindingsDraftResult {
+  suggestions: FindingDraftSuggestion[];
+  generatedBy: "codex";
+}
+
+export interface SynthesisDraftResult {
+  content: string;
+  confidence: number;
+  citations: Citation[];
+  generatedBy: "codex";
 }
 const PATCHABLE_NOTE_PATTERN =
   /^(00-project|01-questions|03-findings|04-synthesis|05-conversations|06-queries)\/.+\.md$/;
@@ -138,10 +156,39 @@ export class KnowledgeApi {
     maxItems?: number;
     ingress?: "http" | "mcp";
     actor?: string;
-  }): Promise<{ suggestions: FindingDraftSuggestion[]; generatedBy: "codex" }> {
+  }): Promise<FindingsDraftResult> {
+    let done: FindingsDraftResult | null = null;
+    for await (const event of this.streamDraftFindings(input)) {
+      if (event.type === "done") {
+        done = event.result;
+      }
+    }
+    if (!done) {
+      throw new Error("Findings draft did not complete");
+    }
+    return done;
+  }
+
+  async *streamDraftFindings(input: {
+    projectId: string;
+    maxItems?: number;
+    ingress?: "http" | "mcp";
+    actor?: string;
+    signal?: AbortSignal;
+  }): AsyncGenerator<AiStreamEvent<FindingsDraftResult>> {
+    const action = "findings_draft" as const;
+    const startedAt = Date.now();
     const boundedMaxItems = Math.max(1, Math.min(input.maxItems ?? 5, MAX_FINDING_DRAFT_ITEMS));
+
+    yield this.stageEvent(action, "prepare", "Preparing findings draft", 5);
+    this.throwIfAborted(input.signal);
+
+    yield this.stageEvent(action, "load_context", "Loading synthesis and open questions", 20);
     const synthesis = await this.getSynthesis(input.projectId);
     const openQuestions = await this.readOpenQuestions(input.projectId);
+    this.throwIfAborted(input.signal);
+
+    yield this.stageEvent(action, "retrieve_evidence", "Retrieving evidence context", 40);
     const evidence = await this.retrievalApi.retrieveContext({
       projectId: input.projectId,
       question: `Draft findings from project evidence. ${openQuestions}`.slice(0, 180),
@@ -149,20 +196,84 @@ export class KnowledgeApi {
       ingress: input.ingress,
       actor: input.actor,
     });
+    this.throwIfAborted(input.signal);
+
+    yield {
+      type: "artifact",
+      action,
+      name: "evidence_preview",
+      data: evidence.slice(0, 5).map((item) => ({
+        filePath: item.filePath,
+        heading: item.heading,
+        excerpt: item.excerpt.slice(0, 160),
+      })),
+    };
 
     const fallbackSuggestions = this.buildFallbackFindingSuggestions(evidence, boundedMaxItems);
-    const aiSuggestions =
-      (await this.tryGenerateFindingSuggestions({
-        projectId: input.projectId,
-        openQuestions,
-        synthesisContent: synthesis.content,
-        evidence,
-        maxItems: boundedMaxItems,
-      })) ?? [];
+
+    const evidenceDigest = evidence.slice(0, 12).map((item) => ({
+      filePath: item.filePath,
+      heading: item.heading,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      excerpt: item.excerpt.slice(0, 260),
+      sourceType: item.sourceType,
+      confidence: item.confidence,
+    }));
+
+    const prompt = [
+      "Return JSON only.",
+      "Generate evidence-grounded finding suggestions.",
+      `Max items: ${boundedMaxItems}.`,
+      'Output shape: {"suggestions":[{"statement":"","status":"supported|tentative|contradicted","isHypothesis":boolean,"citations":Citation[],"tags":string[]}]}',
+      "If citations are missing for a non-hypothesis, include at least one.",
+      "",
+      `Open questions:\n${openQuestions.slice(0, 1200)}`,
+      "",
+      `Current synthesis:\n${synthesis.content.slice(0, 1600)}`,
+      "",
+      `Evidence:\n${JSON.stringify(evidenceDigest, null, 2)}`,
+    ].join("\n");
+
+    yield this.stageEvent(action, "generate", "Generating candidate findings", 70);
+    const iterator = this.streamCodexJsonText({
+      projectId: input.projectId,
+      prompt,
+      evidence: evidenceDigest,
+      signal: input.signal,
+    })[Symbol.asyncIterator]();
+
+    let raw = "";
+    while (true) {
+      const step = await iterator.next();
+      if (step.done) {
+        raw = step.value ?? "";
+        break;
+      }
+      if (step.value.trim().length > 0) {
+        yield {
+          type: "token",
+          action,
+          text: step.value,
+        };
+      }
+    }
+
+    const parsed = raw ? this.extractJsonRecord(raw) : null;
+    const suggestionRows = Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
+    const aiSuggestions = suggestionRows
+      .map((row) => this.normalizeSuggestion(row, evidence))
+      .filter((row): row is FindingDraftSuggestion => row !== null)
+      .slice(0, boundedMaxItems);
+
+    this.throwIfAborted(input.signal);
+    yield this.stageEvent(action, "finalize", "Finalizing findings draft", 95);
+
     const suggestions = (aiSuggestions.length > 0 ? aiSuggestions : fallbackSuggestions).slice(
       0,
       boundedMaxItems,
     );
+    const source = aiSuggestions.length > 0 ? "codex" : "fallback";
 
     this.auditApi.recordEvent({
       projectId: input.projectId,
@@ -172,13 +283,19 @@ export class KnowledgeApi {
       payload: {
         maxItems: boundedMaxItems,
         generatedItems: suggestions.length,
-        source: aiSuggestions.length > 0 ? "codex" : "fallback",
+        source,
       },
     });
 
-    return {
-      suggestions,
-      generatedBy: "codex",
+    yield {
+      type: "done",
+      action,
+      source,
+      durationMs: Date.now() - startedAt,
+      result: {
+        suggestions,
+        generatedBy: "codex",
+      },
     };
   }
 
@@ -187,12 +304,30 @@ export class KnowledgeApi {
     selectedFindingIds: string[];
     ingress?: "http" | "mcp";
     actor?: string;
-  }): Promise<{
-    content: string;
-    confidence: number;
-    citations: Citation[];
-    generatedBy: "codex";
-  }> {
+  }): Promise<SynthesisDraftResult> {
+    let done: SynthesisDraftResult | null = null;
+    for await (const event of this.streamDraftSynthesis(input)) {
+      if (event.type === "done") {
+        done = event.result;
+      }
+    }
+    if (!done) {
+      throw new Error("Synthesis draft did not complete");
+    }
+    return done;
+  }
+
+  async *streamDraftSynthesis(input: {
+    projectId: string;
+    selectedFindingIds: string[];
+    ingress?: "http" | "mcp";
+    actor?: string;
+    signal?: AbortSignal;
+  }): AsyncGenerator<AiStreamEvent<SynthesisDraftResult>> {
+    const action = "synthesis_draft" as const;
+    const startedAt = Date.now();
+    yield this.stageEvent(action, "prepare", "Preparing synthesis draft", 5);
+
     if (input.selectedFindingIds.length === 0) {
       throw new DomainError(
         "At least one finding must be selected to draft synthesis",
@@ -210,6 +345,7 @@ export class KnowledgeApi {
       );
     }
 
+    yield this.stageEvent(action, "retrieve_evidence", "Retrieving supporting evidence", 40);
     const question = selected
       .map((finding) => finding.statement)
       .join(" ")
@@ -222,15 +358,61 @@ export class KnowledgeApi {
       actor: input.actor,
     });
     const citations = evidence.map((item) => this.citationFromEvidence(item)).slice(0, 8);
+    this.throwIfAborted(input.signal);
+
+    yield {
+      type: "artifact",
+      action,
+      name: "citations",
+      data: citations,
+    };
 
     const fallbackContent = this.buildFallbackSynthesis(selected, citations);
-    const aiDraft = await this.tryGenerateSynthesisDraft({
+    const prompt = [
+      "Return JSON only.",
+      "Generate a concise markdown synthesis draft grounded in selected findings and citations.",
+      'Output shape: {"content":"markdown","confidence":0.0}',
+      "",
+      `Selected findings:\n${JSON.stringify(selected, null, 2)}`,
+      "",
+      `Citations:\n${JSON.stringify(citations, null, 2)}`,
+    ].join("\n");
+
+    yield this.stageEvent(action, "generate", "Generating synthesis draft", 70);
+    const iterator = this.streamCodexJsonText({
       projectId: input.projectId,
-      selectedFindings: selected,
-      citations,
-    });
-    const content = aiDraft?.content?.trim() ? aiDraft.content.trim() : fallbackContent;
-    const confidence = this.normalizeConfidence(aiDraft?.confidence ?? 0.7);
+      prompt,
+      evidence: citations,
+      signal: input.signal,
+    })[Symbol.asyncIterator]();
+
+    let raw = "";
+    while (true) {
+      const step = await iterator.next();
+      if (step.done) {
+        raw = step.value ?? "";
+        break;
+      }
+      if (step.value.trim().length > 0) {
+        yield {
+          type: "token",
+          action,
+          text: step.value,
+        };
+      }
+    }
+
+    const parsed = raw ? this.extractJsonRecord(raw) : null;
+    const aiContent = typeof parsed?.content === "string" ? parsed.content.trim() : "";
+    const aiConfidence =
+      typeof parsed?.confidence === "number" ? this.normalizeConfidence(parsed.confidence) : 0.7;
+    const source = aiContent.length > 0 ? "codex" : "fallback";
+
+    this.throwIfAborted(input.signal);
+    yield this.stageEvent(action, "finalize", "Finalizing synthesis draft", 95);
+
+    const content = aiContent.length > 0 ? aiContent : fallbackContent;
+    const confidence = this.normalizeConfidence(aiConfidence);
 
     this.auditApi.recordEvent({
       projectId: input.projectId,
@@ -240,15 +422,21 @@ export class KnowledgeApi {
       payload: {
         selectedFindingIds: input.selectedFindingIds,
         citationCount: citations.length,
-        source: aiDraft ? "codex" : "fallback",
+        source,
       },
     });
 
-    return {
-      content,
-      confidence,
-      citations,
-      generatedBy: "codex",
+    yield {
+      type: "done",
+      action,
+      source,
+      durationMs: Date.now() - startedAt,
+      result: {
+        content,
+        confidence,
+        citations,
+        generatedBy: "codex",
+      },
     };
   }
 
@@ -559,6 +747,76 @@ export class KnowledgeApi {
     ].join("\n");
   }
 
+  private stageEvent(
+    action: "findings_draft" | "synthesis_draft",
+    stage: string,
+    message: string,
+    percent: number,
+  ): AiStreamEvent<never> {
+    return {
+      type: "stage",
+      action,
+      stage,
+      message,
+      percent,
+      at: nowIso(),
+    };
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new DomainError("Generation canceled", "AI_STREAM_ABORTED");
+    }
+  }
+
+  private async *streamCodexJsonText(input: {
+    projectId: string;
+    prompt: string;
+    evidence: unknown[];
+    signal?: AbortSignal;
+  }): AsyncGenerator<string, string, void> {
+    const project = this.workspaceApi.getProject(input.projectId);
+    const projectCharter = await this.vaultApi
+      .readNote(project.vaultPath, "00-project/project.md")
+      .catch(() => "# Project");
+    const stream = this.codexGateway.streamTurn({
+      projectId: input.projectId,
+      threadId: randomId("draft_thread"),
+      signal: input.signal,
+      packet: {
+        systemRules: [
+          "Return JSON only.",
+          "Be evidence-grounded.",
+          "Do not include prose outside JSON.",
+        ],
+        projectCharter,
+        currentQuestion: input.prompt,
+        threadSummary: "Drafting task",
+        retrievedEvidence: input.evidence.map((item) => ({
+          filePath: String((item as { filePath?: string }).filePath ?? "unknown"),
+          heading: String((item as { heading?: string }).heading ?? "evidence"),
+          excerpt: JSON.stringify(item).slice(0, 280),
+        })),
+        allowedTools: [],
+        outputContract: {
+          mustCite: true,
+          allowHypothesis: true,
+        },
+      },
+    });
+
+    let text = "";
+    for await (const event of stream) {
+      if ((event.type === "token" || event.type === "message") && event.text) {
+        text += event.text;
+        yield event.text;
+      }
+      this.throwIfAborted(input.signal);
+    }
+
+    return text.trim();
+  }
+
   private async tryGenerateFindingSuggestions(input: {
     projectId: string;
     openQuestions: string;
@@ -646,40 +904,21 @@ export class KnowledgeApi {
     projectId: string,
     prompt: string,
     evidence: unknown[],
+    signal?: AbortSignal,
   ): Promise<string | null> {
-    const project = this.workspaceApi.getProject(projectId);
-    const projectCharter = await this.vaultApi
-      .readNote(project.vaultPath, "00-project/project.md")
-      .catch(() => "# Project");
-    const stream = this.codexGateway.streamTurn({
-      projectId,
-      threadId: randomId("draft_thread"),
-      packet: {
-        systemRules: [
-          "Return JSON only.",
-          "Be evidence-grounded.",
-          "Do not include prose outside JSON.",
-        ],
-        projectCharter,
-        currentQuestion: prompt,
-        threadSummary: "Drafting task",
-        retrievedEvidence: evidence.map((item) => ({
-          filePath: String((item as { filePath?: string }).filePath ?? "unknown"),
-          heading: String((item as { heading?: string }).heading ?? "evidence"),
-          excerpt: JSON.stringify(item).slice(0, 280),
-        })),
-        allowedTools: [],
-        outputContract: {
-          mustCite: true,
-          allowHypothesis: true,
-        },
-      },
-    });
-
     let text = "";
-    for await (const event of stream) {
-      if ((event.type === "token" || event.type === "message") && event.text) {
-        text += event.text;
+    const iterator = this.streamCodexJsonText({
+      projectId,
+      prompt,
+      evidence,
+      signal,
+    })[Symbol.asyncIterator]();
+
+    while (true) {
+      const step = await iterator.next();
+      if (step.done) {
+        text = step.value ?? "";
+        break;
       }
     }
 

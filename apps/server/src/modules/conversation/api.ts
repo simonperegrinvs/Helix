@@ -90,6 +90,7 @@ export class ConversationApi {
     threadId?: string;
     actor?: string;
     ingress?: "http" | "mcp";
+    signal?: AbortSignal;
   }): AsyncGenerator<
     | { type: "metadata"; turnId: string; threadId: string; citations: RetrievedContextItem[] }
     | { type: "token"; text: string }
@@ -145,6 +146,7 @@ export class ConversationApi {
       projectId: input.projectId,
       threadId: thread.threadId,
       packet,
+      signal: input.signal,
     })) {
       if (event.type === "token" && event.text) {
         fullResponse += event.text;

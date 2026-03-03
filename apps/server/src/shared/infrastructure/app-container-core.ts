@@ -82,6 +82,7 @@ export class AppContainerCore {
       this.knowledgeApi,
       this.reportImportApi,
       this.externalResearchApi,
+      this.conversationApi,
       this.auditApi,
     );
   }

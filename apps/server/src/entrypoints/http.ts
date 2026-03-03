@@ -132,15 +132,31 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
     return c.json({ finding }, 201);
   });
 
-  app.post("/api/projects/:projectId/findings/draft", async (c) => {
+  app.post("/api/projects/:projectId/findings/draft/stream", async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const result = await container.knowledgeApi.draftFindings({
-      projectId: c.req.param("projectId"),
-      maxItems: Number(body.maxItems ?? 5),
-      ingress: "http",
-      actor: "user",
+    return streamSSE(c, async (stream) => {
+      try {
+        for await (const event of container.knowledgeApi.streamDraftFindings({
+          projectId: c.req.param("projectId"),
+          maxItems: Number(body.maxItems ?? 5),
+          ingress: "http",
+          actor: "user",
+          signal: c.req.raw.signal,
+        })) {
+          await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+        }
+      } catch (error) {
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            type: "error",
+            action: "findings_draft",
+            error: error instanceof Error ? error.message : String(error),
+            code: error instanceof DomainError ? error.code : undefined,
+          }),
+        });
+      }
     });
-    return c.json(result);
   });
 
   app.get("/api/projects/:projectId/synthesis", async (c) => {
@@ -160,15 +176,31 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
     return c.json({ doc });
   });
 
-  app.post("/api/projects/:projectId/synthesis/draft", async (c) => {
-    const body = await c.req.json();
-    const result = await container.knowledgeApi.draftSynthesis({
-      projectId: c.req.param("projectId"),
-      selectedFindingIds: Array.isArray(body.selectedFindingIds) ? body.selectedFindingIds : [],
-      ingress: "http",
-      actor: "user",
+  app.post("/api/projects/:projectId/synthesis/draft/stream", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    return streamSSE(c, async (stream) => {
+      try {
+        for await (const event of container.knowledgeApi.streamDraftSynthesis({
+          projectId: c.req.param("projectId"),
+          selectedFindingIds: Array.isArray(body.selectedFindingIds) ? body.selectedFindingIds : [],
+          ingress: "http",
+          actor: "user",
+          signal: c.req.raw.signal,
+        })) {
+          await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+        }
+      } catch (error) {
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            type: "error",
+            action: "synthesis_draft",
+            error: error instanceof Error ? error.message : String(error),
+            code: error instanceof DomainError ? error.code : undefined,
+          }),
+        });
+      }
     });
-    return c.json(result);
   });
 
   app.get("/api/projects/:projectId/search", async (c) => {
@@ -203,30 +235,151 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
     const body = await c.req.json();
     const question = String(body.question ?? "");
     const threadId = body.threadId ? String(body.threadId) : undefined;
+    const startedAt = Date.now();
 
     return streamSSE(c, async (stream) => {
-      for await (const event of container.conversationApi.streamTurn({
-        projectId: c.req.param("projectId"),
-        question,
-        threadId,
-        ingress: "http",
-        actor: "user",
-      })) {
-        await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+      let metadata:
+        | { turnId: string; threadId: string; citations: unknown[] }
+        | null = null;
+
+      await stream.writeSSE({
+        event: "stage",
+        data: JSON.stringify({
+          type: "stage",
+          action: "chat_turn",
+          stage: "prepare",
+          message: "Preparing grounded response",
+          percent: 5,
+          at: new Date().toISOString(),
+        }),
+      });
+
+      try {
+        for await (const event of container.conversationApi.streamTurn({
+          projectId: c.req.param("projectId"),
+          question,
+          threadId,
+          ingress: "http",
+          actor: "user",
+          signal: c.req.raw.signal,
+        })) {
+          if (event.type === "metadata") {
+            metadata = event;
+            await stream.writeSSE({
+              event: "stage",
+              data: JSON.stringify({
+                type: "stage",
+                action: "chat_turn",
+                stage: "retrieval_complete",
+                message: "Evidence retrieved",
+                percent: 40,
+                at: new Date().toISOString(),
+              }),
+            });
+            await stream.writeSSE({
+              event: "artifact",
+              data: JSON.stringify({
+                type: "artifact",
+                action: "chat_turn",
+                name: "metadata",
+                data: event,
+              }),
+            });
+            await stream.writeSSE({
+              event: "stage",
+              data: JSON.stringify({
+                type: "stage",
+                action: "chat_turn",
+                stage: "generate",
+                message: "Generating response",
+                percent: 70,
+                at: new Date().toISOString(),
+              }),
+            });
+            continue;
+          }
+
+          if (event.type === "token") {
+            await stream.writeSSE({
+              event: "token",
+              data: JSON.stringify({
+                type: "token",
+                action: "chat_turn",
+                text: event.text,
+              }),
+            });
+            continue;
+          }
+
+          if (event.type === "done") {
+            await stream.writeSSE({
+              event: "stage",
+              data: JSON.stringify({
+                type: "stage",
+                action: "chat_turn",
+                stage: "finalize",
+                message: "Finalizing response",
+                percent: 95,
+                at: new Date().toISOString(),
+              }),
+            });
+            await stream.writeSSE({
+              event: "done",
+              data: JSON.stringify({
+                type: "done",
+                action: "chat_turn",
+                source: "codex",
+                durationMs: Date.now() - startedAt,
+                result: {
+                  response: event.response,
+                  turnId: metadata?.turnId ?? "",
+                  threadId: metadata?.threadId ?? "",
+                  citations: metadata?.citations ?? [],
+                },
+              }),
+            });
+          }
+        }
+      } catch (error) {
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            type: "error",
+            action: "chat_turn",
+            error: error instanceof Error ? error.message : String(error),
+            code: error instanceof DomainError ? error.code : undefined,
+          }),
+        });
       }
     });
   });
 
-  app.post("/api/projects/:projectId/external-query/draft", async (c) => {
-    const body = await c.req.json();
-    const draft = await container.externalResearchApi.draftResearchQuery({
-      projectId: c.req.param("projectId"),
-      goal: String(body.goal ?? "Research next steps"),
-      userRequest: body.userRequest ? String(body.userRequest) : undefined,
-      ingress: "http",
-      actor: "user",
+  app.post("/api/projects/:projectId/external-query/draft/stream", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    return streamSSE(c, async (stream) => {
+      try {
+        for await (const event of container.externalResearchApi.streamDraftResearchQuery({
+          projectId: c.req.param("projectId"),
+          goal: String(body.goal ?? "Research next steps"),
+          userRequest: body.userRequest ? String(body.userRequest) : undefined,
+          ingress: "http",
+          actor: "user",
+          signal: c.req.raw.signal,
+        })) {
+          await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+        }
+      } catch (error) {
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            type: "error",
+            action: "external_query_draft",
+            error: error instanceof Error ? error.message : String(error),
+            code: error instanceof DomainError ? error.code : undefined,
+          }),
+        });
+      }
     });
-    return c.json({ draft }, 201);
   });
 
   app.get("/api/projects/:projectId/external-query/drafts", (c) => {

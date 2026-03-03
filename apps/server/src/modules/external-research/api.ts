@@ -1,4 +1,4 @@
-import type { ExternalResearchQueryDraft } from "@helix/contracts";
+import type { AiStreamEvent, ExternalResearchQueryDraft } from "@helix/contracts";
 import { nowIso, randomId } from "@helix/shared-kernel";
 import type { DatabaseClient } from "../../shared/infrastructure/database";
 import type { AuditDocsApi } from "../audit-docs/api";
@@ -15,6 +15,10 @@ export interface ExternalResearchRunResult {
   runId: string;
   accepted: boolean;
   payload: Record<string, unknown>;
+}
+
+export interface ExternalQueryDraftResult {
+  draft: ExternalResearchQueryDraft;
 }
 
 export class ExternalResearchApi {
@@ -36,12 +40,42 @@ export class ExternalResearchApi {
     ingress?: "http" | "mcp";
     actor?: string;
   }): Promise<ExternalResearchQueryDraft> {
+    let done: ExternalResearchQueryDraft | null = null;
+    for await (const event of this.streamDraftResearchQuery(input)) {
+      if (event.type === "done") {
+        done = event.result.draft;
+      }
+    }
+    if (!done) {
+      throw new Error("External query draft did not complete");
+    }
+    return done;
+  }
+
+  async *streamDraftResearchQuery(input: {
+    projectId: string;
+    goal: string;
+    userRequest?: string;
+    ingress?: "http" | "mcp";
+    actor?: string;
+    signal?: AbortSignal;
+  }): AsyncGenerator<AiStreamEvent<ExternalQueryDraftResult>> {
+    const action = "external_query_draft" as const;
+    const startedAt = Date.now();
+
+    yield this.stageEvent(action, "prepare", "Preparing external research draft", 5);
     const project = this.workspaceApi.getProject(input.projectId);
+    this.throwIfAborted(input.signal);
+
+    yield this.stageEvent(action, "load_context", "Loading open questions and synthesis", 20);
     const openQuestions = await this.vaultApi.readNote(
       project.vaultPath,
       "01-questions/open-questions.md",
     );
     const synthesis = await this.knowledgeApi.getSynthesis(input.projectId);
+    this.throwIfAborted(input.signal);
+
+    yield this.stageEvent(action, "retrieve_evidence", "Retrieving supporting context", 40);
     const supportingContext = await this.retrievalApi.retrieveContext({
       projectId: input.projectId,
       question: input.goal,
@@ -49,6 +83,7 @@ export class ExternalResearchApi {
       ingress: input.ingress,
       actor: input.actor,
     });
+    this.throwIfAborted(input.signal);
 
     const conceptVariants = this.extractConceptVariants(`${openQuestions}\n${synthesis.content}`);
     const unresolvedQuestions = openQuestions
@@ -84,16 +119,64 @@ export class ExternalResearchApi {
         excerpt: item.excerpt.slice(0, 220),
       })),
     };
-    const aiPayload = await this.tryGenerateAiQueryPayload({
+    yield {
+      type: "artifact",
+      action,
+      name: "context_preview",
+      data: supportingContext.map((item) => ({
+        filePath: item.filePath,
+        heading: item.heading,
+      })),
+    };
+
+    yield this.stageEvent(action, "generate", "Generating external query package", 70);
+    const prompt = [
+      "Return JSON only.",
+      "Generate an external research query package.",
+      "Keep keys: goal, context, query, outputShape, evidenceAnchor.",
+      `Goal: ${input.goal}`,
+      `User request: ${input.userRequest ?? ""}`,
+      "",
+      `Open questions:\n${openQuestions.slice(0, 1200)}`,
+      "",
+      `Current synthesis:\n${synthesis.content.slice(0, 1400)}`,
+      "",
+      `Evidence context:\n${JSON.stringify(supportingContext, null, 2)}`,
+      "",
+      `Fallback package for reference:\n${JSON.stringify(fallbackPayload, null, 2)}`,
+    ].join("\n");
+
+    const iterator = this.streamCodexJsonText({
       projectId: input.projectId,
-      goal: input.goal,
-      userRequest: input.userRequest,
-      openQuestions,
-      synthesis: synthesis.content,
-      unresolvedQuestions,
+      prompt,
       supportingContext,
-      fallbackPayload,
-    });
+      signal: input.signal,
+    })[Symbol.asyncIterator]();
+
+    let raw = "";
+    while (true) {
+      const step = await iterator.next();
+      if (step.done) {
+        raw = step.value ?? "";
+        break;
+      }
+      if (step.value.trim().length > 0) {
+        yield {
+          type: "token",
+          action,
+          text: step.value,
+        };
+      }
+    }
+
+    const parsed = raw ? this.extractJsonRecord(raw) : null;
+    const aiPayload =
+      parsed && parsed.goal && parsed.query && parsed.context
+        ? (parsed as Record<string, unknown>)
+        : null;
+    this.throwIfAborted(input.signal);
+
+    yield this.stageEvent(action, "finalize", "Finalizing external query draft", 95);
     const queryPayload = aiPayload ?? fallbackPayload;
     const queryText = JSON.stringify(queryPayload, null, 2);
 
@@ -142,7 +225,15 @@ export class ExternalResearchApi {
       },
     });
 
-    return draft;
+    yield {
+      type: "done",
+      action,
+      source: aiPayload ? "codex" : "fallback",
+      durationMs: Date.now() - startedAt,
+      result: {
+        draft,
+      },
+    };
   }
 
   listDrafts(projectId: string): ExternalResearchQueryDraft[] {
@@ -225,6 +316,68 @@ export class ExternalResearchApi {
       accepted: triggerResult.accepted,
       payload: triggerResult.payload,
     };
+  }
+
+  private stageEvent(
+    action: "external_query_draft",
+    stage: string,
+    message: string,
+    percent: number,
+  ): AiStreamEvent<never> {
+    return {
+      type: "stage",
+      action,
+      stage,
+      message,
+      percent,
+      at: nowIso(),
+    };
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new Error("Generation canceled");
+    }
+  }
+
+  private async *streamCodexJsonText(input: {
+    projectId: string;
+    prompt: string;
+    supportingContext: Array<{ filePath: string; heading: string; excerpt: string }>;
+    signal?: AbortSignal;
+  }): AsyncGenerator<string, string, void> {
+    const project = this.workspaceApi.getProject(input.projectId);
+    const projectCharter = await this.vaultApi
+      .readNote(project.vaultPath, "00-project/project.md")
+      .catch(() => "# Project");
+    const stream = this.codexGateway.streamTurn({
+      projectId: input.projectId,
+      threadId: randomId("query_draft"),
+      signal: input.signal,
+      packet: {
+        systemRules: ["Return JSON only.", "Do not include markdown code fences."],
+        projectCharter,
+        currentQuestion: input.prompt,
+        threadSummary: "External query drafting",
+        retrievedEvidence: input.supportingContext.slice(0, 8),
+        allowedTools: [],
+        outputContract: {
+          mustCite: true,
+          allowHypothesis: true,
+        },
+      },
+    });
+
+    let text = "";
+    for await (const event of stream) {
+      if ((event.type === "token" || event.type === "message") && event.text) {
+        text += event.text;
+        yield event.text;
+      }
+      this.throwIfAborted(input.signal);
+    }
+
+    return text.trim();
   }
 
   private async tryGenerateAiQueryPayload(input: {
