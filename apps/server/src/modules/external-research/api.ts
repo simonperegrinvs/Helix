@@ -2,6 +2,7 @@ import type { ExternalResearchQueryDraft } from "@helix/contracts";
 import { nowIso, randomId } from "@helix/shared-kernel";
 import type { DatabaseClient } from "../../shared/infrastructure/database";
 import type { AuditDocsApi } from "../audit-docs/api";
+import type { CodexGateway } from "../conversation/application/codex-gateway";
 import type { KnowledgeApi } from "../knowledge/api";
 import type { RetrievalApi } from "../retrieval/api";
 import type { VaultApi } from "../vault/api";
@@ -23,6 +24,7 @@ export class ExternalResearchApi {
     private readonly retrievalApi: RetrievalApi,
     private readonly knowledgeApi: KnowledgeApi,
     private readonly vaultApi: VaultApi,
+    private readonly codexGateway: CodexGateway,
     private readonly auditApi: AuditDocsApi,
     private readonly externalToolPort: ExternalResearchToolPort,
   ) {}
@@ -56,7 +58,7 @@ export class ExternalResearchApi {
       .filter(Boolean)
       .slice(0, 12);
 
-    const queryPayload = {
+    const fallbackPayload = {
       goal: input.goal,
       context: {
         project: project.name,
@@ -82,7 +84,17 @@ export class ExternalResearchApi {
         excerpt: item.excerpt.slice(0, 220),
       })),
     };
-
+    const aiPayload = await this.tryGenerateAiQueryPayload({
+      projectId: input.projectId,
+      goal: input.goal,
+      userRequest: input.userRequest,
+      openQuestions,
+      synthesis: synthesis.content,
+      unresolvedQuestions,
+      supportingContext,
+      fallbackPayload,
+    });
+    const queryPayload = aiPayload ?? fallbackPayload;
     const queryText = JSON.stringify(queryPayload, null, 2);
 
     const draft: ExternalResearchQueryDraft = {
@@ -94,7 +106,10 @@ export class ExternalResearchApi {
         mustReferenceOpenQuestion: unresolvedQuestions.length > 0,
         completenessScore: this.completenessScore(queryPayload),
       },
-      expectedOutputShape: queryPayload.outputShape,
+      expectedOutputShape:
+        queryPayload.outputShape && typeof queryPayload.outputShape === "object"
+          ? (queryPayload.outputShape as Record<string, unknown>)
+          : fallbackPayload.outputShape,
       status: "draft",
     };
 
@@ -123,6 +138,7 @@ export class ExternalResearchApi {
       payload: {
         queryDraftId: draft.queryDraftId,
         goal: draft.goal,
+        source: aiPayload ? "codex" : "fallback",
       },
     });
 
@@ -209,6 +225,91 @@ export class ExternalResearchApi {
       accepted: triggerResult.accepted,
       payload: triggerResult.payload,
     };
+  }
+
+  private async tryGenerateAiQueryPayload(input: {
+    projectId: string;
+    goal: string;
+    userRequest?: string;
+    openQuestions: string;
+    synthesis: string;
+    unresolvedQuestions: string[];
+    supportingContext: Array<{ filePath: string; heading: string; excerpt: string }>;
+    fallbackPayload: Record<string, unknown>;
+  }): Promise<Record<string, unknown> | null> {
+    const project = this.workspaceApi.getProject(input.projectId);
+    const projectCharter = await this.vaultApi
+      .readNote(project.vaultPath, "00-project/project.md")
+      .catch(() => "# Project");
+    const prompt = [
+      "Return JSON only.",
+      "Generate an external research query package.",
+      "Keep keys: goal, context, query, outputShape, evidenceAnchor.",
+      `Goal: ${input.goal}`,
+      `User request: ${input.userRequest ?? ""}`,
+      "",
+      `Open questions:\n${input.openQuestions.slice(0, 1200)}`,
+      "",
+      `Current synthesis:\n${input.synthesis.slice(0, 1400)}`,
+      "",
+      `Evidence context:\n${JSON.stringify(input.supportingContext, null, 2)}`,
+      "",
+      `Fallback package for reference:\n${JSON.stringify(input.fallbackPayload, null, 2)}`,
+    ].join("\n");
+
+    const stream = this.codexGateway.streamTurn({
+      projectId: input.projectId,
+      threadId: randomId("query_draft"),
+      packet: {
+        systemRules: ["Return JSON only.", "Do not include markdown code fences."],
+        projectCharter,
+        currentQuestion: prompt,
+        threadSummary: "External query drafting",
+        retrievedEvidence: input.supportingContext.slice(0, 8),
+        allowedTools: [],
+        outputContract: {
+          mustCite: true,
+          allowHypothesis: true,
+        },
+      },
+    });
+
+    let text = "";
+    for await (const event of stream) {
+      if ((event.type === "token" || event.type === "message") && event.text) {
+        text += event.text;
+      }
+    }
+
+    const parsed = this.extractJsonRecord(text);
+    if (!parsed) {
+      return null;
+    }
+    if (!parsed.goal || !parsed.query || !parsed.context) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  private extractJsonRecord(text: string): Record<string, unknown> | null {
+    const fencedJsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fencedJsonMatch?.[1] ?? text;
+    const firstBrace = candidate.indexOf("{");
+    const lastBrace = candidate.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(candidate.slice(firstBrace, lastBrace + 1)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   private extractConceptVariants(text: string): string[] {

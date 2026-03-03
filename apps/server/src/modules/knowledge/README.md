@@ -6,7 +6,9 @@ Owns findings, synthesis metadata, evidence listing, and patch proposal/apply wo
 
 - `registerFinding`
 - `listFindings`
+- `draftFindings`
 - `getSynthesis`
+- `draftSynthesis`
 - `updateSynthesis`
 - `proposePatch`
 - `applyPatch`

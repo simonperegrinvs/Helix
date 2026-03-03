@@ -114,4 +114,43 @@ describe("Knowledge patch and synthesis flow", () => {
       }),
     ).rejects.toThrow();
   });
+
+  test("generates finding and synthesis drafts for review workflows", async () => {
+    const seededFinding = ctx.container.knowledgeApi.registerFinding({
+      projectId,
+      statement: "Battery storage deployment is accelerating.",
+      status: "tentative",
+      citations: [
+        {
+          filePath: "04-synthesis/current-synthesis.md",
+          heading: "Current Synthesis",
+          startLine: 1,
+          endLine: 2,
+          excerpt: "Evidence-backed summary.",
+          sourceType: "synthesis",
+          confidence: 0.8,
+        },
+      ],
+      ingress: "http",
+      actor: "test",
+    });
+
+    const findingsDraft = await ctx.container.knowledgeApi.draftFindings({
+      projectId,
+      maxItems: 3,
+      ingress: "http",
+      actor: "test",
+    });
+    expect(findingsDraft.generatedBy).toBe("codex");
+    expect(findingsDraft.suggestions.length).toBeGreaterThan(0);
+
+    const synthesisDraft = await ctx.container.knowledgeApi.draftSynthesis({
+      projectId,
+      selectedFindingIds: [seededFinding.findingId],
+      ingress: "http",
+      actor: "test",
+    });
+    expect(synthesisDraft.generatedBy).toBe("codex");
+    expect(synthesisDraft.content).toContain("# Current Synthesis");
+  });
 });

@@ -9,15 +9,16 @@ export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 60_000,
   use: {
-    baseURL: "http://localhost:8787",
+    baseURL: "http://localhost:8791",
   },
   webServer: {
     command: "bun run dev",
-    port: 8787,
+    port: 8791,
     cwd: repoRoot,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     env: {
       ...process.env,
+      PORT: "8791",
       HELIX_FAKE_CODEX: "1",
       HELIX_DB_PATH: "/tmp/helix-e2e.sqlite",
       HELIX_VAULT_ROOT: "/tmp/helix-e2e-vault",

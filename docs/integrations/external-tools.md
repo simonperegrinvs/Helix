@@ -1,6 +1,7 @@
 # External Tool Integration
 
 Helix supports two external research trigger adapters behind `ExternalResearchToolPort`.
+Query packages are drafted in-app (AI-first with deterministic fallback), then sent through these adapters.
 
 ## Modes
 

@@ -54,10 +54,11 @@ bun run test:e2e
 
 - Project lifecycle with vault attachment
 - Safe vault read/write APIs
-- Manual report import with normalization
+- Manual report import with normalized markdown preview
 - Project-scoped retrieval and citations
 - Grounded chat streaming through Codex gateway
-- External research query drafting and manual trigger package
+- AI-assisted findings/synthesis drafting with human review and apply
+- AI-assisted external query drafting with manual trigger package
 - MCP read-only + propose/apply tools with approval tokens
 - Correlated audit trail for HTTP and MCP calls
 - Coverage gates and contract suites (with optional live integration modes)

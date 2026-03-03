@@ -36,6 +36,55 @@ export interface RetrievedContextItem {
   confidence: number;
 }
 
+export interface Citation {
+  filePath: string;
+  heading: string;
+  startLine: number;
+  endLine: number;
+  excerpt: string;
+  sourceType: "project_note" | "imported_report" | "synthesis" | "finding";
+  confidence: number;
+}
+
+export interface ImportedReport {
+  reportId: string;
+  projectId: string;
+  sourceType: string;
+  originalFilename: string;
+  originalPath: string;
+  normalizedPath: string;
+  importedAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface Finding {
+  findingId: string;
+  projectId: string;
+  statement: string;
+  status: "supported" | "tentative" | "contradicted";
+  isHypothesis: boolean;
+  citations: Citation[];
+  tags: string[];
+}
+
+export interface FindingDraftSuggestion {
+  statement: string;
+  status: "supported" | "tentative" | "contradicted";
+  isHypothesis: boolean;
+  citations: Citation[];
+  tags: string[];
+}
+
+export interface ExternalQueryDraft {
+  queryDraftId: string;
+  projectId: string;
+  goal: string;
+  queryText: string;
+  constraints: Record<string, unknown>;
+  expectedOutputShape: Record<string, unknown>;
+  status: "draft" | "approved" | "triggered";
+}
+
 export const api = {
   listProjects: () => request<{ projects: ResearchProject[] }>("/api/projects"),
   createProject: (body: { name: string; vaultRoot?: string }) =>
@@ -58,28 +107,57 @@ export const api = {
       body: JSON.stringify(body),
     }),
   listReports: (projectId: string) =>
-    request<{ reports: unknown[] }>(`/api/projects/${projectId}/reports`),
+    request<{ reports: ImportedReport[] }>(`/api/projects/${projectId}/reports`),
+  getReportContent: (projectId: string, reportId: string) =>
+    request<{ report: ImportedReport; normalizedContent: string }>(
+      `/api/projects/${projectId}/reports/${reportId}/content`,
+    ),
   listFindings: (projectId: string) =>
-    request<{ findings: unknown[] }>(`/api/projects/${projectId}/findings`),
+    request<{ findings: Finding[] }>(`/api/projects/${projectId}/findings`),
+  createFinding: (
+    projectId: string,
+    body: {
+      statement: string;
+      status: Finding["status"];
+      isHypothesis?: boolean;
+      citations: Citation[];
+      tags?: string[];
+    },
+  ) =>
+    request<{ finding: Finding }>(`/api/projects/${projectId}/findings`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  draftFindings: (projectId: string, body: { maxItems?: number }) =>
+    request<{ suggestions: FindingDraftSuggestion[]; generatedBy: "codex" }>(
+      `/api/projects/${projectId}/findings/draft`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   getSynthesis: (projectId: string) =>
     request<{ doc: unknown; content: string }>(`/api/projects/${projectId}/synthesis`),
+  draftSynthesis: (projectId: string, body: { selectedFindingIds: string[] }) =>
+    request<{ content: string; confidence: number; citations: Citation[]; generatedBy: "codex" }>(
+      `/api/projects/${projectId}/synthesis/draft`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   updateSynthesis: (projectId: string, body: { content: string; confidence: number }) =>
     request<{ doc: unknown }>(`/api/projects/${projectId}/synthesis`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),
   draftExternalQuery: (projectId: string, body: { goal: string; userRequest?: string }) =>
-    request<{ draft: { queryDraftId: string; queryText: string } }>(
-      `/api/projects/${projectId}/external-query/draft`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
+    request<{ draft: ExternalQueryDraft }>(`/api/projects/${projectId}/external-query/draft`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   listExternalDrafts: (projectId: string) =>
-    request<{ drafts: Array<{ queryDraftId: string; goal: string; status: string }> }>(
-      `/api/projects/${projectId}/external-query/drafts`,
-    ),
+    request<{ drafts: ExternalQueryDraft[] }>(`/api/projects/${projectId}/external-query/drafts`),
   triggerExternalQuery: (projectId: string, queryDraftId: string) =>
     request<{ result: unknown }>(`/api/projects/${projectId}/external-query/trigger`, {
       method: "POST",

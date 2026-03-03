@@ -104,6 +104,14 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
     return c.json({ report });
   });
 
+  app.get("/api/projects/:projectId/reports/:reportId/content", async (c) => {
+    const content = await container.reportImportApi.getReportContent(
+      c.req.param("projectId"),
+      c.req.param("reportId"),
+    );
+    return c.json(content);
+  });
+
   app.get("/api/projects/:projectId/findings", (c) => {
     const findings = container.knowledgeApi.listFindings(c.req.param("projectId"));
     return c.json({ findings });
@@ -124,6 +132,17 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
     return c.json({ finding }, 201);
   });
 
+  app.post("/api/projects/:projectId/findings/draft", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const result = await container.knowledgeApi.draftFindings({
+      projectId: c.req.param("projectId"),
+      maxItems: Number(body.maxItems ?? 5),
+      ingress: "http",
+      actor: "user",
+    });
+    return c.json(result);
+  });
+
   app.get("/api/projects/:projectId/synthesis", async (c) => {
     const synthesis = await container.knowledgeApi.getSynthesis(c.req.param("projectId"));
     return c.json(synthesis);
@@ -139,6 +158,17 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
       actor: "user",
     });
     return c.json({ doc });
+  });
+
+  app.post("/api/projects/:projectId/synthesis/draft", async (c) => {
+    const body = await c.req.json();
+    const result = await container.knowledgeApi.draftSynthesis({
+      projectId: c.req.param("projectId"),
+      selectedFindingIds: Array.isArray(body.selectedFindingIds) ? body.selectedFindingIds : [],
+      ingress: "http",
+      actor: "user",
+    });
+    return c.json(result);
   });
 
   app.get("/api/projects/:projectId/search", async (c) => {

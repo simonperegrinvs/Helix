@@ -63,6 +63,11 @@ describe("Report import flow", () => {
 
     const fetched = ctx.container.reportImportApi.getReport(projectId, md.reportId);
     expect(fetched.reportId).toBe(md.reportId);
+    const contentView = await ctx.container.reportImportApi.getReportContent(
+      projectId,
+      md.reportId,
+    );
+    expect(contentView.normalizedContent).toContain("Claim about volatility");
 
     const retrieved = await ctx.container.retrievalApi.retrieveContext({
       projectId,

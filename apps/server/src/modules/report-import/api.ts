@@ -17,6 +17,11 @@ export interface ImportReportInput {
   actor?: string;
   ingress?: "http" | "mcp";
 }
+
+export interface ReportContentView {
+  report: ImportedReport;
+  normalizedContent: string;
+}
 const MAX_IMPORT_BYTES = Number(process.env.HELIX_MAX_IMPORT_BYTES ?? 10_000_000);
 const ALLOWED_IMPORT_EXTENSIONS = new Set([".md", ".txt", ".pdf"]);
 
@@ -185,7 +190,7 @@ export class ReportImportApi {
     } | null;
 
     if (!row) {
-      throw new Error(`Report not found: ${reportId}`);
+      throw new DomainError(`Report not found: ${reportId}`, "REPORT_NOT_FOUND");
     }
 
     return {
@@ -197,6 +202,19 @@ export class ReportImportApi {
       normalizedPath: row.normalized_path,
       importedAt: row.imported_at,
       metadata: JSON.parse(row.metadata_json),
+    };
+  }
+
+  async getReportContent(projectId: string, reportId: string): Promise<ReportContentView> {
+    const report = this.getReport(projectId, reportId);
+    const project = this.workspaceApi.getProject(projectId);
+    const normalizedContent = await this.vaultApi.readNote(
+      project.vaultPath,
+      report.normalizedPath,
+    );
+    return {
+      report,
+      normalizedContent,
     };
   }
 

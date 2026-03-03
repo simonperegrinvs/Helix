@@ -7,3 +7,4 @@ Manual ingestion of external reports into a project vault.
 - `importReport`
 - `listReports`
 - `getReport`
+- `getReportContent`

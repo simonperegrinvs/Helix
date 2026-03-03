@@ -114,6 +114,21 @@ button.danger {
   color: var(--muted);
 }
 
+.workspace-project-name {
+  margin: 0;
+  font-size: 1.45rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.workspace-project-meta {
+  margin: 0 0 0.35rem;
+  color: var(--muted);
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 .nav-link {
   text-decoration: none;
   color: var(--ink);
@@ -124,6 +139,20 @@ button.danger {
 .nav-link.active {
   background: var(--brand-soft);
   font-weight: 700;
+}
+
+.button-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.split-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 .workspace-content {
@@ -148,6 +177,78 @@ button.danger {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 0.8rem;
+}
+
+.report-card {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.report-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: baseline;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.45rem;
+  color: var(--muted);
+}
+
+.finding-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 26, 20, 0.45);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 30;
+}
+
+.modal-panel {
+  width: min(900px, 96vw);
+  max-height: 90vh;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.7rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0.8rem 0.9rem;
+}
+
+.modal-body {
+  overflow: auto;
+  padding: 0.9rem;
+}
+
+.markdown-preview {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fcfffb;
+  padding: 0.85rem;
 }
 
 textarea,

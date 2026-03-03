@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AuditPage } from "../features/audit/AuditPage";
@@ -8,6 +9,7 @@ import { ProjectOverviewPage } from "../features/projects/ProjectOverviewPage";
 import { ProjectSettingsPage } from "../features/projects/ProjectSettingsPage";
 import { ProjectsPage } from "../features/projects/ProjectsPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
+import { api } from "../lib/api";
 
 export const App = () => {
   return (
@@ -36,6 +38,16 @@ export const App = () => {
 const ProjectWorkspace = () => {
   const { projectId = "" } = useParams();
   const location = useLocation();
+  const overviewQuery = useQuery({
+    queryKey: ["overview", projectId],
+    queryFn: () => api.getOverview(projectId),
+    enabled: projectId.length > 0,
+  });
+
+  const project = (overviewQuery.data as { project: { name: string; slug: string } } | undefined)
+    ?.project;
+  const projectName = project?.name ?? "Loading project...";
+  const projectMeta = project?.slug ?? projectId;
 
   const nav = useMemo(
     () => [
@@ -54,7 +66,12 @@ const ProjectWorkspace = () => {
     <div className="workspace">
       <aside className="workspace-nav">
         <p className="workspace-title">Active Project</p>
-        <code>{projectId}</code>
+        <h3 className="workspace-project-name" title={projectName}>
+          {projectName}
+        </h3>
+        <p className="workspace-project-meta" title={projectMeta}>
+          {projectMeta}
+        </p>
         {nav.map((item) => {
           const absolute = `/projects/${projectId}/${item.to}`;
           const active =

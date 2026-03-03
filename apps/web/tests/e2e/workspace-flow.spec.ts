@@ -15,7 +15,9 @@ test("end-to-end workspace flow", async ({ page }) => {
 
   await page.getByRole("link", { name: "Reports" }).click();
   await page.getByRole("button", { name: "Import Report" }).click();
-  await expect(page.getByText("reportId").first()).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "deep-research-report.md" }).first(),
+  ).toBeVisible();
 
   await page.getByRole("link", { name: "Chat" }).click();
   await page

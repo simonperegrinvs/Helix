@@ -11,10 +11,13 @@
 - `POST /api/projects/:projectId/reports/import`
 - `GET /api/projects/:projectId/reports`
 - `GET /api/projects/:projectId/reports/:reportId`
+- `GET /api/projects/:projectId/reports/:reportId/content`
 - `GET /api/projects/:projectId/findings`
 - `POST /api/projects/:projectId/findings`
+- `POST /api/projects/:projectId/findings/draft`
 - `GET /api/projects/:projectId/synthesis`
 - `PUT /api/projects/:projectId/synthesis`
+- `POST /api/projects/:projectId/synthesis/draft`
 - `GET /api/projects/:projectId/search`
 - `GET /api/projects/:projectId/threads`
 - `GET /api/projects/:projectId/threads/:threadId/turns`

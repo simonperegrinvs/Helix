@@ -46,6 +46,8 @@ export class AppContainerCore {
       this.database,
       this.workspaceApi,
       this.vaultApi,
+      this.retrievalApi,
+      options.codexGateway,
       this.auditApi,
     );
     this.reportImportApi = new ReportImportApi(
@@ -61,6 +63,7 @@ export class AppContainerCore {
       this.retrievalApi,
       this.knowledgeApi,
       this.vaultApi,
+      options.codexGateway,
       this.auditApi,
       options.externalToolPort,
     );

@@ -1,8 +1,10 @@
-import type { Citation, Finding, SynthesisDocument } from "@helix/contracts";
+import type { Citation, Finding, RetrievedContextItem, SynthesisDocument } from "@helix/contracts";
 import { DomainError, nowIso, randomId } from "@helix/shared-kernel";
 import { createPatch } from "diff";
 import type { DatabaseClient } from "../../shared/infrastructure/database";
 import type { AuditDocsApi } from "../audit-docs/api";
+import type { CodexGateway } from "../conversation/application/codex-gateway";
+import type { RetrievalApi } from "../retrieval/api";
 import type { VaultApi } from "../vault/api";
 import type { WorkspaceApi } from "../workspace/api";
 
@@ -32,15 +34,26 @@ interface ApplyPatchInput {
   ingress?: "http" | "mcp";
   actor?: string;
 }
+
+export interface FindingDraftSuggestion {
+  statement: string;
+  status: Finding["status"];
+  isHypothesis: boolean;
+  citations: Citation[];
+  tags: string[];
+}
 const PATCHABLE_NOTE_PATTERN =
   /^(00-project|01-questions|03-findings|04-synthesis|05-conversations|06-queries)\/.+\.md$/;
 const MAX_PATCH_BYTES = Number(process.env.HELIX_MAX_PATCH_BYTES ?? 1_000_000);
+const MAX_FINDING_DRAFT_ITEMS = 10;
 
 export class KnowledgeApi {
   constructor(
     private readonly database: DatabaseClient,
     private readonly workspaceApi: WorkspaceApi,
     private readonly vaultApi: VaultApi,
+    private readonly retrievalApi: RetrievalApi,
+    private readonly codexGateway: CodexGateway,
     private readonly auditApi: AuditDocsApi,
   ) {}
 
@@ -118,6 +131,125 @@ export class KnowledgeApi {
       citations: JSON.parse(row.citations_json) as Citation[],
       tags: JSON.parse(row.tags_json) as string[],
     }));
+  }
+
+  async draftFindings(input: {
+    projectId: string;
+    maxItems?: number;
+    ingress?: "http" | "mcp";
+    actor?: string;
+  }): Promise<{ suggestions: FindingDraftSuggestion[]; generatedBy: "codex" }> {
+    const boundedMaxItems = Math.max(1, Math.min(input.maxItems ?? 5, MAX_FINDING_DRAFT_ITEMS));
+    const synthesis = await this.getSynthesis(input.projectId);
+    const openQuestions = await this.readOpenQuestions(input.projectId);
+    const evidence = await this.retrievalApi.retrieveContext({
+      projectId: input.projectId,
+      question: `Draft findings from project evidence. ${openQuestions}`.slice(0, 180),
+      maxItems: Math.max(6, boundedMaxItems * 2),
+      ingress: input.ingress,
+      actor: input.actor,
+    });
+
+    const fallbackSuggestions = this.buildFallbackFindingSuggestions(evidence, boundedMaxItems);
+    const aiSuggestions =
+      (await this.tryGenerateFindingSuggestions({
+        projectId: input.projectId,
+        openQuestions,
+        synthesisContent: synthesis.content,
+        evidence,
+        maxItems: boundedMaxItems,
+      })) ?? [];
+    const suggestions = (aiSuggestions.length > 0 ? aiSuggestions : fallbackSuggestions).slice(
+      0,
+      boundedMaxItems,
+    );
+
+    this.auditApi.recordEvent({
+      projectId: input.projectId,
+      ingress: input.ingress ?? "http",
+      action: "knowledge.draft_findings",
+      actor: input.actor ?? "system",
+      payload: {
+        maxItems: boundedMaxItems,
+        generatedItems: suggestions.length,
+        source: aiSuggestions.length > 0 ? "codex" : "fallback",
+      },
+    });
+
+    return {
+      suggestions,
+      generatedBy: "codex",
+    };
+  }
+
+  async draftSynthesis(input: {
+    projectId: string;
+    selectedFindingIds: string[];
+    ingress?: "http" | "mcp";
+    actor?: string;
+  }): Promise<{
+    content: string;
+    confidence: number;
+    citations: Citation[];
+    generatedBy: "codex";
+  }> {
+    if (input.selectedFindingIds.length === 0) {
+      throw new DomainError(
+        "At least one finding must be selected to draft synthesis",
+        "KNOWLEDGE_SYNTHESIS_DRAFT_NEEDS_FINDINGS",
+      );
+    }
+
+    const selected = this.listFindings(input.projectId).filter((finding) =>
+      input.selectedFindingIds.includes(finding.findingId),
+    );
+    if (selected.length === 0) {
+      throw new DomainError(
+        "Selected findings were not found in this project",
+        "KNOWLEDGE_SYNTHESIS_DRAFT_FINDINGS_NOT_FOUND",
+      );
+    }
+
+    const question = selected
+      .map((finding) => finding.statement)
+      .join(" ")
+      .slice(0, 220);
+    const evidence = await this.retrievalApi.retrieveContext({
+      projectId: input.projectId,
+      question,
+      maxItems: 8,
+      ingress: input.ingress,
+      actor: input.actor,
+    });
+    const citations = evidence.map((item) => this.citationFromEvidence(item)).slice(0, 8);
+
+    const fallbackContent = this.buildFallbackSynthesis(selected, citations);
+    const aiDraft = await this.tryGenerateSynthesisDraft({
+      projectId: input.projectId,
+      selectedFindings: selected,
+      citations,
+    });
+    const content = aiDraft?.content?.trim() ? aiDraft.content.trim() : fallbackContent;
+    const confidence = this.normalizeConfidence(aiDraft?.confidence ?? 0.7);
+
+    this.auditApi.recordEvent({
+      projectId: input.projectId,
+      ingress: input.ingress ?? "http",
+      action: "knowledge.draft_synthesis",
+      actor: input.actor ?? "system",
+      payload: {
+        selectedFindingIds: input.selectedFindingIds,
+        citationCount: citations.length,
+        source: aiDraft ? "codex" : "fallback",
+      },
+    });
+
+    return {
+      content,
+      confidence,
+      citations,
+      generatedBy: "codex",
+    };
   }
 
   async getSynthesis(projectId: string): Promise<{ doc: SynthesisDocument; content: string }> {
@@ -366,6 +498,315 @@ export class KnowledgeApi {
       applied: true,
       targetPath: proposal.target_path,
     };
+  }
+
+  private async readOpenQuestions(projectId: string): Promise<string> {
+    const project = this.workspaceApi.getProject(projectId);
+    return this.vaultApi
+      .readNote(project.vaultPath, "01-questions/open-questions.md")
+      .catch(() => "");
+  }
+
+  private buildFallbackFindingSuggestions(
+    evidence: RetrievedContextItem[],
+    maxItems: number,
+  ): FindingDraftSuggestion[] {
+    const seeded = evidence.slice(0, maxItems).map((item) => ({
+      statement: `Evidence suggests: ${item.heading} (${item.filePath})`,
+      status: "tentative" as Finding["status"],
+      isHypothesis: false,
+      citations: [this.citationFromEvidence(item)],
+      tags: ["ai-draft", "evidence-based"],
+    }));
+    if (seeded.length > 0) {
+      return seeded;
+    }
+
+    return [
+      {
+        statement: "Hypothesis: existing project notes likely contain unresolved evidence gaps.",
+        status: "tentative",
+        isHypothesis: true,
+        citations: [],
+        tags: ["ai-draft", "hypothesis"],
+      },
+    ];
+  }
+
+  private buildFallbackSynthesis(selected: Finding[], citations: Citation[]): string {
+    const findingsBlock = selected
+      .slice(0, 10)
+      .map((finding) => `- ${finding.statement} (${finding.status})`)
+      .join("\n");
+    const evidenceBlock = citations
+      .slice(0, 6)
+      .map((citation) => `- ${citation.filePath} · ${citation.heading}`)
+      .join("\n");
+
+    return [
+      "# Current Synthesis",
+      "",
+      "## Draft Summary",
+      findingsBlock || "- No selected findings.",
+      "",
+      "## Evidence Anchors",
+      evidenceBlock || "- No evidence anchors available.",
+      "",
+      "## Next Questions",
+      "- Which claims require stronger citations?",
+      "- Which hypotheses should be tested next?",
+      "",
+    ].join("\n");
+  }
+
+  private async tryGenerateFindingSuggestions(input: {
+    projectId: string;
+    openQuestions: string;
+    synthesisContent: string;
+    evidence: RetrievedContextItem[];
+    maxItems: number;
+  }): Promise<FindingDraftSuggestion[] | null> {
+    const evidenceDigest = input.evidence.slice(0, 12).map((item) => ({
+      filePath: item.filePath,
+      heading: item.heading,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      excerpt: item.excerpt.slice(0, 260),
+      sourceType: item.sourceType,
+      confidence: item.confidence,
+    }));
+    const prompt = [
+      "Return JSON only.",
+      "Generate evidence-grounded finding suggestions.",
+      `Max items: ${input.maxItems}.`,
+      'Output shape: {"suggestions":[{"statement":"","status":"supported|tentative|contradicted","isHypothesis":boolean,"citations":Citation[],"tags":string[]}]}',
+      "If citations are missing for a non-hypothesis, include at least one.",
+      "",
+      `Open questions:\n${input.openQuestions.slice(0, 1200)}`,
+      "",
+      `Current synthesis:\n${input.synthesisContent.slice(0, 1600)}`,
+      "",
+      `Evidence:\n${JSON.stringify(evidenceDigest, null, 2)}`,
+    ].join("\n");
+
+    const raw = await this.collectCodexJsonText(input.projectId, prompt, evidenceDigest);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = this.extractJsonRecord(raw);
+    const suggestionRows = Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
+    const suggestions = suggestionRows
+      .map((row) => this.normalizeSuggestion(row, input.evidence))
+      .filter((row): row is FindingDraftSuggestion => row !== null)
+      .slice(0, input.maxItems);
+
+    return suggestions.length > 0 ? suggestions : null;
+  }
+
+  private async tryGenerateSynthesisDraft(input: {
+    projectId: string;
+    selectedFindings: Finding[];
+    citations: Citation[];
+  }): Promise<{ content: string; confidence: number } | null> {
+    const prompt = [
+      "Return JSON only.",
+      "Generate a concise markdown synthesis draft grounded in selected findings and citations.",
+      'Output shape: {"content":"markdown","confidence":0.0}',
+      "",
+      `Selected findings:\n${JSON.stringify(input.selectedFindings, null, 2)}`,
+      "",
+      `Citations:\n${JSON.stringify(input.citations, null, 2)}`,
+    ].join("\n");
+
+    const raw = await this.collectCodexJsonText(input.projectId, prompt, input.citations);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = this.extractJsonRecord(raw);
+    if (!parsed) {
+      return null;
+    }
+
+    const content = typeof parsed.content === "string" ? parsed.content.trim() : "";
+    if (content.length === 0) {
+      return null;
+    }
+
+    return {
+      content,
+      confidence: this.normalizeConfidence(
+        typeof parsed.confidence === "number" ? parsed.confidence : 0.7,
+      ),
+    };
+  }
+
+  private async collectCodexJsonText(
+    projectId: string,
+    prompt: string,
+    evidence: unknown[],
+  ): Promise<string | null> {
+    const project = this.workspaceApi.getProject(projectId);
+    const projectCharter = await this.vaultApi
+      .readNote(project.vaultPath, "00-project/project.md")
+      .catch(() => "# Project");
+    const stream = this.codexGateway.streamTurn({
+      projectId,
+      threadId: randomId("draft_thread"),
+      packet: {
+        systemRules: [
+          "Return JSON only.",
+          "Be evidence-grounded.",
+          "Do not include prose outside JSON.",
+        ],
+        projectCharter,
+        currentQuestion: prompt,
+        threadSummary: "Drafting task",
+        retrievedEvidence: evidence.map((item) => ({
+          filePath: String((item as { filePath?: string }).filePath ?? "unknown"),
+          heading: String((item as { heading?: string }).heading ?? "evidence"),
+          excerpt: JSON.stringify(item).slice(0, 280),
+        })),
+        allowedTools: [],
+        outputContract: {
+          mustCite: true,
+          allowHypothesis: true,
+        },
+      },
+    });
+
+    let text = "";
+    for await (const event of stream) {
+      if ((event.type === "token" || event.type === "message") && event.text) {
+        text += event.text;
+      }
+    }
+
+    return text.trim() ? text : null;
+  }
+
+  private extractJsonRecord(text: string): Record<string, unknown> | null {
+    const fencedJsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fencedJsonMatch?.[1] ?? text;
+    const firstBrace = candidate.indexOf("{");
+    const lastBrace = candidate.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+      return null;
+    }
+
+    const jsonSlice = candidate.slice(firstBrace, lastBrace + 1);
+    try {
+      const parsed = JSON.parse(jsonSlice) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeSuggestion(
+    raw: unknown,
+    evidence: RetrievedContextItem[],
+  ): FindingDraftSuggestion | null {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+
+    const row = raw as Record<string, unknown>;
+    const statement = String(row.statement ?? "").trim();
+    if (statement.length === 0) {
+      return null;
+    }
+
+    const status =
+      row.status === "supported" || row.status === "contradicted" || row.status === "tentative"
+        ? row.status
+        : "tentative";
+    let isHypothesis = Boolean(row.isHypothesis);
+    const tags = Array.isArray(row.tags)
+      ? row.tags
+          .map((item) => String(item).trim())
+          .filter(Boolean)
+          .slice(0, 8)
+      : [];
+
+    const citations = Array.isArray(row.citations)
+      ? row.citations
+          .map((item) => this.normalizeCitation(item))
+          .filter((item): item is Citation => item !== null)
+          .slice(0, 5)
+      : [];
+
+    if (!isHypothesis && citations.length === 0) {
+      const firstEvidence = evidence[0];
+      if (firstEvidence) {
+        citations.push(this.citationFromEvidence(firstEvidence));
+      }
+    }
+    if (!isHypothesis && citations.length === 0) {
+      isHypothesis = true;
+    }
+
+    return {
+      statement: statement.slice(0, 500),
+      status,
+      isHypothesis,
+      citations,
+      tags,
+    };
+  }
+
+  private normalizeCitation(raw: unknown): Citation | null {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const row = raw as Record<string, unknown>;
+    const filePath = String(row.filePath ?? "").trim();
+    if (!filePath) {
+      return null;
+    }
+
+    const sourceType =
+      row.sourceType === "imported_report" ||
+      row.sourceType === "synthesis" ||
+      row.sourceType === "finding" ||
+      row.sourceType === "project_note"
+        ? row.sourceType
+        : "project_note";
+
+    return {
+      filePath,
+      heading: String(row.heading ?? "Evidence"),
+      startLine: Number(row.startLine ?? 1),
+      endLine: Number(row.endLine ?? Number(row.startLine ?? 1)),
+      excerpt: String(row.excerpt ?? "").slice(0, 800),
+      sourceType,
+      confidence: this.normalizeConfidence(
+        typeof row.confidence === "number" ? row.confidence : 0.65,
+      ),
+    };
+  }
+
+  private citationFromEvidence(item: RetrievedContextItem): Citation {
+    return {
+      filePath: item.filePath,
+      heading: item.heading,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      excerpt: item.excerpt,
+      sourceType: item.sourceType,
+      confidence: item.confidence,
+    };
+  }
+
+  private normalizeConfidence(value: number): number {
+    if (Number.isNaN(value)) {
+      return 0.6;
+    }
+    return Math.max(0.1, Math.min(1, value));
   }
 
   listEvidence(
