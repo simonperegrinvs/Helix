@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@helix/contracts": ["packages/contracts/src/index.ts"],
+      "@helix/contracts/*": ["packages/contracts/src/*"],
+      "@helix/shared-kernel": ["packages/shared-kernel/src/index.ts"],
+      "@helix/shared-kernel/*": ["packages/shared-kernel/src/*"]
+    }
+  }
+}

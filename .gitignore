@@ -1,0 +1,12 @@
+node_modules
+.bun
+.env
+.env.*
+dist
+coverage
+playwright-report
+test-results
+.DS_Store
+apps/server/data
+apps/server/.tmp
+apps/web/.vite

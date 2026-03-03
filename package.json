@@ -1,0 +1,24 @@
+{
+  "name": "helix",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Vault-first research platform (UI-first, MCP-secondary)",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --filter @helix/server dev & bun run --filter @helix/web dev",
+    "dev:server": "bun run --filter @helix/server dev",
+    "dev:web": "bun run --filter @helix/web dev",
+    "build": "bun run --filter @helix/contracts build && bun run --filter @helix/shared-kernel build && bun run --filter @helix/server build && bun run --filter @helix/web build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "biome check .",
+    "check:boundaries": "bun run scripts/check-boundaries.mjs",
+    "format": "biome format --write .",
+    "test": "bun run --filter @helix/server test && bun run --filter @helix/web test",
+    "test:bdd": "bun run --filter @helix/server test:bdd",
+    "test:e2e": "bun run --filter @helix/web test:e2e"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.8.2"
+  }
+}
