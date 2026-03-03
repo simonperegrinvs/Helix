@@ -1,9 +1,11 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { AppContainer } from "../infrastructure/app-container";
+import { FakeCodexGateway } from "../../modules/conversation/infrastructure/fake-codex-gateway";
+import { ManualExternalResearchToolAdapter } from "../../modules/external-research/infrastructure/manual-external-research-tool-adapter";
+import { AppContainerCore } from "../infrastructure/app-container-core";
 
 export interface TestContext {
-  container: AppContainer;
+  container: AppContainerCore;
   root: string;
   dbPath: string;
   vaultRoot: string;
@@ -20,7 +22,11 @@ export const createTestContext = async (name: string): Promise<TestContext> => {
   process.env.HELIX_VAULT_ROOT = vaultRoot;
   process.env.HELIX_FAKE_CODEX = "1";
 
-  const container = new AppContainer();
+  const container = new AppContainerCore({
+    dbPath,
+    codexGateway: new FakeCodexGateway(),
+    externalToolPort: new ManualExternalResearchToolAdapter(),
+  });
 
   return {
     container,

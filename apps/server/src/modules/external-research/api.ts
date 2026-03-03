@@ -6,10 +6,13 @@ import type { KnowledgeApi } from "../knowledge/api";
 import type { RetrievalApi } from "../retrieval/api";
 import type { VaultApi } from "../vault/api";
 import type { WorkspaceApi } from "../workspace/api";
+import type { ExternalResearchToolPort } from "./application/external-research-tool-port";
 
 export interface ExternalResearchRunResult {
-  mode: "manual";
+  mode: "manual" | "http";
   queryDraftId: string;
+  runId: string;
+  accepted: boolean;
   payload: Record<string, unknown>;
 }
 
@@ -21,6 +24,7 @@ export class ExternalResearchApi {
     private readonly knowledgeApi: KnowledgeApi,
     private readonly vaultApi: VaultApi,
     private readonly auditApi: AuditDocsApi,
+    private readonly externalToolPort: ExternalResearchToolPort,
   ) {}
 
   async draftResearchQuery(input: {
@@ -154,12 +158,12 @@ export class ExternalResearchApi {
     }));
   }
 
-  triggerTool(input: {
+  async triggerTool(input: {
     projectId: string;
     queryDraftId: string;
     ingress?: "http" | "mcp";
     actor?: string;
-  }): ExternalResearchRunResult {
+  }): Promise<ExternalResearchRunResult> {
     const draft = this.database.db
       .query(
         `SELECT query_draft_id, query_text
@@ -179,7 +183,12 @@ export class ExternalResearchApi {
       .query(`UPDATE external_query_drafts SET status = 'triggered' WHERE query_draft_id = ?1`)
       .run(input.queryDraftId);
 
-    const payload = JSON.parse(draft.query_text) as Record<string, unknown>;
+    const queryPackage = JSON.parse(draft.query_text) as Record<string, unknown>;
+    const triggerResult = await this.externalToolPort.trigger({
+      projectId: input.projectId,
+      queryDraftId: input.queryDraftId,
+      queryPackage,
+    });
 
     this.auditApi.recordEvent({
       projectId: input.projectId,
@@ -188,14 +197,17 @@ export class ExternalResearchApi {
       actor: input.actor ?? "system",
       payload: {
         queryDraftId: input.queryDraftId,
-        mode: "manual",
+        mode: triggerResult.mode,
+        runId: triggerResult.runId,
       },
     });
 
     return {
-      mode: "manual",
+      mode: triggerResult.mode,
       queryDraftId: input.queryDraftId,
-      payload,
+      runId: triggerResult.runId,
+      accepted: triggerResult.accepted,
+      payload: triggerResult.payload,
     };
   }
 

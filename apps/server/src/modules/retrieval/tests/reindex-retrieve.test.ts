@@ -39,4 +39,13 @@ describe("Retrieval reindex and query", () => {
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]?.filePath).toContain("03-findings/findings.md");
   });
+
+  test("caps maxItems to safety bound", async () => {
+    const results = await ctx.container.retrievalApi.retrieveContext({
+      projectId,
+      question: "carbon",
+      maxItems: 500,
+    });
+    expect(results.length).toBeLessThanOrEqual(25);
+  });
 });

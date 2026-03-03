@@ -18,6 +18,7 @@ Read-only:
 Mutating/propose:
 
 - `external_query.draft`
+- `external_query.trigger`
 - `import_report.register`
 - `knowledge.propose_patch`
 - `knowledge.apply_patch` (approval token required)
@@ -26,4 +27,4 @@ Mutating/propose:
 
 - `projectId` scoping required for non-global tools.
 - All writes route through Vault module path checks.
-- Every call and mutation is audit logged.
+- Every tool call (success or failure) is audit logged.

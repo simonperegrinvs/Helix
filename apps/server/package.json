@@ -9,6 +9,7 @@
     "start": "bun run dist/entrypoints/http.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test ./src",
+    "test:coverage": "bun test ./src --coverage --coverage-reporter=lcov --coverage-dir=coverage",
     "test:bdd": "cucumber-js --require src/shared/testing/cucumber-hooks.js --require src/shared/testing/steps/**/*.js features/**/*.feature"
   },
   "dependencies": {

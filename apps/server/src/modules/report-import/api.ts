@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import type { ImportedReport } from "@helix/contracts";
-import { nowIso, randomId } from "@helix/shared-kernel";
+import { DomainError, nowIso, randomId } from "@helix/shared-kernel";
 import type { DatabaseClient } from "../../shared/infrastructure/database";
 import type { AuditDocsApi } from "../audit-docs/api";
 import type { RetrievalApi } from "../retrieval/api";
@@ -17,6 +17,8 @@ export interface ImportReportInput {
   actor?: string;
   ingress?: "http" | "mcp";
 }
+const MAX_IMPORT_BYTES = Number(process.env.HELIX_MAX_IMPORT_BYTES ?? 10_000_000);
+const ALLOWED_IMPORT_EXTENSIONS = new Set([".md", ".txt", ".pdf"]);
 
 export class ReportImportApi {
   constructor(
@@ -32,6 +34,12 @@ export class ReportImportApi {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const reportId = randomId("report");
     const extension = extname(input.originalFilename).toLowerCase();
+    if (!ALLOWED_IMPORT_EXTENSIONS.has(extension)) {
+      throw new DomainError(
+        `Unsupported report format: ${extension || "<none>"}`,
+        "REPORT_IMPORT_UNSUPPORTED_FORMAT",
+      );
+    }
     const fileBase = `${timestamp}-${reportId}-${input.originalFilename}`;
 
     const originalRelativePath = join("02-sources", "imported-reports", "original", fileBase);
@@ -61,6 +69,12 @@ export class ReportImportApi {
     } else {
       originalBytes = Buffer.from(input.content ?? "", "utf8");
       await writeFile(originalAbsolutePath, originalBytes);
+    }
+    if (originalBytes.byteLength > MAX_IMPORT_BYTES) {
+      throw new DomainError(
+        `Imported report exceeds size limit (${MAX_IMPORT_BYTES} bytes)`,
+        "REPORT_IMPORT_TOO_LARGE",
+      );
     }
 
     const normalized = await this.normalizeContent({

@@ -14,6 +14,7 @@
     "check:boundaries": "bun run scripts/check-boundaries.mjs",
     "format": "biome format --write .",
     "test": "bun run --filter @helix/server test && bun run --filter @helix/web test",
+    "test:coverage": "bun run --filter @helix/server test:coverage && node scripts/check-coverage.mjs apps/server/coverage/lcov.info",
     "test:bdd": "bun run --filter @helix/server test:bdd",
     "test:e2e": "bun run --filter @helix/web test:e2e"
   },

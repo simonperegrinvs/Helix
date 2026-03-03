@@ -176,7 +176,7 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
 
   app.post("/api/projects/:projectId/external-query/trigger", async (c) => {
     const body = await c.req.json();
-    const result = container.externalResearchApi.triggerTool({
+    const result = await container.externalResearchApi.triggerTool({
       projectId: c.req.param("projectId"),
       queryDraftId: String(body.queryDraftId),
       ingress: "http",

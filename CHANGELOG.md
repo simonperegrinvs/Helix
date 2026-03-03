@@ -10,3 +10,12 @@
 - Added report import, retrieval indexing, synthesis, query drafting, and audit workflows.
 - Added unit, property-based, BDD, and E2E test scaffolding.
 - Added architecture docs, ADR set, testing guide, and runbooks.
+
+## 0.1.1 - 2026-03-03
+
+- Closed roadmap hardening/testing gaps with expanded server test suites and module contracts.
+- Added coverage gating (`bun run test:coverage`) with CI enforcement and threshold checks.
+- Added external tool connector architecture with manual and HTTP adapters.
+- Added optional live contract toggles for Codex and external adapters.
+- Expanded Playwright coverage to full workspace flow (create/import/chat/query/audit).
+- Added safety guards for import size, note size, patch size, patch target allowlist, and retrieval limits.

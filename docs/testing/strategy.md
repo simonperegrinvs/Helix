@@ -4,8 +4,9 @@
 
 1. Domain and invariant tests (`bun test`)
 2. Property-based tests (`fast-check`)
-3. BDD integration tests (`cucumber-js`)
-4. Browser flow checks (`playwright`)
+3. Adapter and ingress contract suites (`CodexGateway`, external tool adapters, MCP schemas)
+4. BDD integration tests (`cucumber-js`)
+5. Browser workflow checks (`playwright`)
 
 ## Principles
 
@@ -19,3 +20,8 @@
 - Overall: 80%+
 - Domain: 90%+
 - Application: 85%+
+
+Coverage gates are enforced by:
+
+- `bun run test:coverage` at repository root
+- `scripts/check-coverage.mjs` against server LCOV output

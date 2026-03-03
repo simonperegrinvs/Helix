@@ -23,5 +23,11 @@ jobs:
         run: bun run typecheck
       - name: Test
         run: bun run test
+      - name: Coverage gates
+        run: bun run test:coverage
       - name: BDD
         run: bun run test:bdd
+      - name: Install Playwright browser
+        run: cd apps/web && bunx playwright install --with-deps chromium
+      - name: E2E
+        run: bun run test:e2e

@@ -19,6 +19,7 @@ interface Chunk {
   endLine: number;
   excerpt: string;
 }
+const MAX_RETRIEVAL_ITEMS = Number(process.env.HELIX_MAX_RETRIEVAL_ITEMS ?? 25);
 
 export class RetrievalApi {
   constructor(
@@ -73,6 +74,7 @@ export class RetrievalApi {
   }
 
   async retrieveContext(input: RetrieveContextInput): Promise<RetrievedContextItem[]> {
+    const boundedMaxItems = Math.max(1, Math.min(input.maxItems, MAX_RETRIEVAL_ITEMS));
     const queryText = this.toFtsQuery(input.question);
 
     const rows = this.database.db
@@ -84,7 +86,7 @@ export class RetrievalApi {
          ORDER BY score ASC
          LIMIT ?3`,
       )
-      .all(input.projectId, queryText, input.maxItems) as Array<{
+      .all(input.projectId, queryText, boundedMaxItems) as Array<{
       chunk_id: string;
       file_path: string;
       heading: string;
@@ -108,7 +110,7 @@ export class RetrievalApi {
             .all(
               input.projectId,
               `%${input.question.slice(0, 40)}%`,
-              input.maxItems,
+              boundedMaxItems,
             ) as typeof rows);
 
     const citations: RetrievedContextItem[] = fallbackRows.map((row) => ({
@@ -130,6 +132,7 @@ export class RetrievalApi {
       payload: {
         question: input.question,
         items: citations.length,
+        maxItems: boundedMaxItems,
       },
     });
 

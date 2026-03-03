@@ -33,6 +33,7 @@ Web defaults: `http://localhost:5173`
 
 ```bash
 bun run test
+bun run test:coverage
 bun run test:bdd
 bun run test:e2e
 ```
@@ -47,6 +48,7 @@ bun run test:e2e
 - External research query drafting and manual trigger package
 - MCP read-only + propose/apply tools with approval tokens
 - Correlated audit trail for HTTP and MCP calls
+- Coverage gates and contract suites (with optional live integration modes)
 
 ## Definition-of-done alignment
 

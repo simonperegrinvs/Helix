@@ -19,3 +19,4 @@ Helix integrates with `codex app-server` through `AppServerCodexGateway`.
 
 - Default is live gateway.
 - Deterministic integration tests can set `HELIX_FAKE_CODEX=1`.
+- Live Codex gateway contracts can be enabled with `HELIX_CONTRACT_LIVE_CODEX=1`.

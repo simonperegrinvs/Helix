@@ -32,6 +32,9 @@ interface ApplyPatchInput {
   ingress?: "http" | "mcp";
   actor?: string;
 }
+const PATCHABLE_NOTE_PATTERN =
+  /^(00-project|01-questions|03-findings|04-synthesis|05-conversations|06-queries)\/.+\.md$/;
+const MAX_PATCH_BYTES = Number(process.env.HELIX_MAX_PATCH_BYTES ?? 1_000_000);
 
 export class KnowledgeApi {
   constructor(
@@ -226,6 +229,19 @@ export class KnowledgeApi {
     diff: string;
     targetPath: string;
   }> {
+    if (!PATCHABLE_NOTE_PATTERN.test(input.targetPath)) {
+      throw new DomainError(
+        `Patch target is not allowed: ${input.targetPath}`,
+        "KNOWLEDGE_PATCH_TARGET_NOT_ALLOWED",
+      );
+    }
+    if (Buffer.byteLength(input.proposedContent, "utf8") > MAX_PATCH_BYTES) {
+      throw new DomainError(
+        `Patch content exceeds limit (${MAX_PATCH_BYTES} bytes)`,
+        "KNOWLEDGE_PATCH_TOO_LARGE",
+      );
+    }
+
     const project = this.workspaceApi.getProject(input.projectId);
     const existing = await this.vaultApi
       .readNote(project.vaultPath, input.targetPath)

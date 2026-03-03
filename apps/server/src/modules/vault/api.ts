@@ -20,6 +20,7 @@ const REQUIRED_PATHS = [
   "07-attachments/.gitkeep",
   ".research/manifest.json",
 ] as const;
+const MAX_NOTE_BYTES = Number(process.env.HELIX_MAX_NOTE_BYTES ?? 1_000_000);
 
 export interface ProjectTreeNode {
   name: string;
@@ -77,6 +78,12 @@ export class VaultApi {
 
   async writeNote(projectRoot: string, notePath: string, content: string): Promise<void> {
     const absolutePath = this.resolveSafePath(projectRoot, notePath);
+    if (Buffer.byteLength(content, "utf8") > MAX_NOTE_BYTES) {
+      throw new DomainError(
+        `Note content exceeds size limit (${MAX_NOTE_BYTES} bytes)`,
+        "VAULT_NOTE_TOO_LARGE",
+      );
+    }
     await mkdir(resolve(absolutePath, ".."), { recursive: true });
     await writeFile(absolutePath, content, "utf8");
   }
