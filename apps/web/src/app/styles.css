@@ -201,6 +201,23 @@ button.danger {
   color: var(--muted);
 }
 
+.technical-details {
+  border-top: 1px dashed var(--border);
+  margin-top: 0.15rem;
+  padding-top: 0.45rem;
+}
+
+.technical-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.86rem;
+  user-select: none;
+}
+
+.technical-details code {
+  word-break: break-all;
+}
+
 .finding-row {
   display: flex;
   align-items: flex-start;

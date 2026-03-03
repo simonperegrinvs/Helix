@@ -126,6 +126,18 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
                 {suggestion.isHypothesis ? "Hypothesis" : "Evidence-backed"} · Citations:{" "}
                 {suggestion.citations.length}
               </p>
+              {suggestion.citations.length > 0 ? (
+                <div className="grid">
+                  {suggestion.citations.slice(0, 2).map((citation, citationIndex) => (
+                    <div className="card" key={`${citation.filePath}-${citationIndex}`}>
+                      <strong>
+                        {citation.filePath} · {citation.heading}
+                      </strong>
+                      <p className="muted">{citation.excerpt.slice(0, 240)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="button-row">
                 <button
                   type="button"

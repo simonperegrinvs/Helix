@@ -512,7 +512,7 @@ export class KnowledgeApi {
     maxItems: number,
   ): FindingDraftSuggestion[] {
     const seeded = evidence.slice(0, maxItems).map((item) => ({
-      statement: `Evidence suggests: ${item.heading} (${item.filePath})`,
+      statement: this.fallbackStatementFromEvidence(item),
       status: "tentative" as Finding["status"],
       isHypothesis: false,
       citations: [this.citationFromEvidence(item)],
@@ -720,6 +720,10 @@ export class KnowledgeApi {
     if (statement.length === 0) {
       return null;
     }
+    const normalizedStatement = statement
+      .replace(/^Evidence suggests:\s*/i, "Potential finding: ")
+      .replace(/\s*\([^)]*\)\s*$/, "")
+      .trim();
 
     const status =
       row.status === "supported" || row.status === "contradicted" || row.status === "tentative"
@@ -751,12 +755,29 @@ export class KnowledgeApi {
     }
 
     return {
-      statement: statement.slice(0, 500),
+      statement: normalizedStatement.slice(0, 500),
       status,
       isHypothesis,
       citations,
       tags,
     };
+  }
+
+  private fallbackStatementFromEvidence(item: RetrievedContextItem): string {
+    const cleaned = item.excerpt
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^#{1,6}\s+/, "").trim())
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] ?? "";
+    const text = (firstSentence || `${item.heading} in ${item.filePath}`)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 220);
+    const suffix = text.endsWith(".") ? "" : ".";
+    return `Potential finding: ${text}${suffix}`;
   }
 
   private normalizeCitation(raw: unknown): Citation | null {
