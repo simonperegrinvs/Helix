@@ -10,6 +10,7 @@ export interface AiRunState<TResult> {
   status: AiRunStatus;
   startedAt: number | null;
   finishedAt: number | null;
+  lastEventAt: number | null;
   percent: number;
   latestStage: string;
   stageMessage: string;
@@ -23,6 +24,7 @@ const initialRunState = <TResult,>(): AiRunState<TResult> => ({
   status: "idle",
   startedAt: null,
   finishedAt: null,
+  lastEventAt: null,
   percent: 0,
   latestStage: "",
   stageMessage: "",
@@ -55,6 +57,14 @@ export const useAiRun = <TResult,>() => {
     return Math.max(0, end - run.startedAt);
   }, [run.startedAt, run.finishedAt, tick]);
 
+  const silenceMs = useMemo(() => {
+    if (!run.lastEventAt) {
+      return 0;
+    }
+    const end = run.finishedAt ?? Date.now();
+    return Math.max(0, end - run.lastEventAt);
+  }, [run.lastEventAt, run.finishedAt, tick]);
+
   const handleEvent = useCallback((runId: number, event: AiStreamEvent<TResult>) => {
     setRun((current) => {
       if (runId !== runCounter.current) {
@@ -64,6 +74,7 @@ export const useAiRun = <TResult,>() => {
       const nextEvents = [...current.events, event].slice(-MAX_EVENTS);
       const next = {
         ...current,
+        lastEventAt: Date.now(),
         events: nextEvents,
       };
 
@@ -125,6 +136,7 @@ export const useAiRun = <TResult,>() => {
         status: "running",
         startedAt: Date.now(),
         finishedAt: null,
+        lastEventAt: Date.now(),
         percent: 0,
         latestStage: "queued",
         stageMessage: "Queued",
@@ -184,6 +196,7 @@ export const useAiRun = <TResult,>() => {
   return {
     run,
     elapsedMs,
+    silenceMs,
     start,
     cancel,
   };

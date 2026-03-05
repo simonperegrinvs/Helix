@@ -78,6 +78,7 @@ export const ProjectChatPage = ({ projectId }: { projectId: string }) => {
         title="Chat Progress"
         run={chatRun.run}
         elapsedMs={chatRun.elapsedMs}
+        silenceMs={chatRun.silenceMs}
         onCancel={chatRun.cancel}
       />
 

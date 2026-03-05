@@ -11,11 +11,13 @@ export const AiProgressPanel = <TResult,>({
   title,
   run,
   elapsedMs,
+  silenceMs = 0,
   onCancel,
 }: {
   title: string;
   run: AiRunState<TResult>;
   elapsedMs: number;
+  silenceMs?: number;
   onCancel?: () => void;
 }) => {
   if (run.status === "idle") {
@@ -47,7 +49,12 @@ export const AiProgressPanel = <TResult,>({
 
       <div className="ai-token-preview">
         <strong>Live model output</strong>
-        <pre>{run.tokenPreview || "Waiting for tokens..."}</pre>
+        <pre>
+          {run.tokenPreview ||
+            (run.status === "running" && run.events.length > 0
+              ? `Waiting for model tokens... still running (${formatElapsed(silenceMs)} since last update).`
+              : "Waiting for tokens...")}
+        </pre>
       </div>
 
       <div className="ai-event-log">

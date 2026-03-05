@@ -60,6 +60,7 @@ export const ExternalResearchPage = ({ projectId }: { projectId: string }) => {
           title="External Query Draft"
           run={draftRun.run}
           elapsedMs={draftRun.elapsedMs}
+          silenceMs={draftRun.silenceMs}
           onCancel={draftRun.cancel}
         />
       </div>

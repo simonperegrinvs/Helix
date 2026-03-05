@@ -136,6 +136,7 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
           title="Findings Generation"
           run={findingsRun.run}
           elapsedMs={findingsRun.elapsedMs}
+          silenceMs={findingsRun.silenceMs}
           onCancel={findingsRun.cancel}
         />
 
@@ -196,6 +197,7 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
           title="Synthesis Draft Generation"
           run={synthesisRun.run}
           elapsedMs={synthesisRun.elapsedMs}
+          silenceMs={synthesisRun.silenceMs}
           onCancel={synthesisRun.cancel}
         />
 

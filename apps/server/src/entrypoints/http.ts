@@ -478,10 +478,13 @@ export const createHttpApp = (container: AppContainer = new AppContainer()): Hon
 
 const app = createHttpApp();
 const port = Number(process.env.PORT ?? 8787);
+const requestedIdleTimeout = Number(process.env.HELIX_HTTP_IDLE_TIMEOUT_SECONDS ?? 240);
+const idleTimeout = Math.max(1, Math.min(255, requestedIdleTimeout));
 
 console.log(`Helix server listening on http://localhost:${port}`);
 
 export default {
   port,
+  idleTimeout,
   fetch: app.fetch,
 };
