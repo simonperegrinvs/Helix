@@ -12,12 +12,14 @@ export const AiProgressPanel = <TResult,>({
   run,
   elapsedMs,
   silenceMs = 0,
+  hideRawTokens = false,
   onCancel,
 }: {
   title: string;
   run: AiRunState<TResult>;
   elapsedMs: number;
   silenceMs?: number;
+  hideRawTokens?: boolean;
   onCancel?: () => void;
 }) => {
   if (run.status === "idle") {
@@ -50,7 +52,13 @@ export const AiProgressPanel = <TResult,>({
       <div className="ai-token-preview">
         <strong>Live model output</strong>
         <pre>
-          {run.tokenPreview ||
+          {hideRawTokens
+            ? run.status === "running"
+              ? `Generating structured draft... latest step: ${run.latestStage || "working"}`
+              : run.status === "succeeded"
+                ? "Structured draft generated."
+                : "No token preview."
+            : run.tokenPreview ||
             (run.status === "running" && run.events.length > 0
               ? `Waiting for model tokens... still running (${formatElapsed(silenceMs)} since last update).`
               : "Waiting for tokens...")}
@@ -58,7 +66,10 @@ export const AiProgressPanel = <TResult,>({
       </div>
 
       <div className="ai-event-log">
-        {run.events.slice(-6).map((event, index) => (
+        {run.events
+          .filter((event) => !(hideRawTokens && event.type === "token"))
+          .slice(-6)
+          .map((event, index) => (
           <p key={`${event.type}-${index}`} className="muted">
             {event.type === "stage"
               ? `${event.stage}: ${event.message}`

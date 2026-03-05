@@ -261,16 +261,19 @@ export class KnowledgeApi {
 
     const parsed = raw ? this.extractJsonRecord(raw) : null;
     const suggestionRows = Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
-    const aiSuggestions = suggestionRows
+    const aiSuggestions = this.dedupeSuggestions(
+      suggestionRows
       .map((row) => this.normalizeSuggestion(row, evidence))
       .filter((row): row is FindingDraftSuggestion => row !== null)
-      .slice(0, boundedMaxItems);
+      .slice(0, boundedMaxItems * 2),
+      boundedMaxItems,
+    );
 
     this.throwIfAborted(input.signal);
     yield this.stageEvent(action, "finalize", "Finalizing findings draft", 95);
 
-    const suggestions = (aiSuggestions.length > 0 ? aiSuggestions : fallbackSuggestions).slice(
-      0,
+    const suggestions = this.dedupeSuggestions(
+      aiSuggestions.length > 0 ? [...aiSuggestions, ...fallbackSuggestions] : fallbackSuggestions,
       boundedMaxItems,
     );
     const source = aiSuggestions.length > 0 ? "codex" : "fallback";
@@ -707,7 +710,7 @@ export class KnowledgeApi {
       tags: ["ai-draft", "evidence-based"],
     }));
     if (seeded.length > 0) {
-      return seeded;
+      return this.dedupeSuggestions(seeded, maxItems);
     }
 
     return [
@@ -719,6 +722,39 @@ export class KnowledgeApi {
         tags: ["ai-draft", "hypothesis"],
       },
     ];
+  }
+
+  private dedupeSuggestions(
+    suggestions: FindingDraftSuggestion[],
+    maxItems: number,
+  ): FindingDraftSuggestion[] {
+    const seen = new Set<string>();
+    const unique: FindingDraftSuggestion[] = [];
+
+    for (const suggestion of suggestions) {
+      const key = this.canonicalSuggestionStatement(suggestion.statement);
+      if (!key || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      unique.push(suggestion);
+      if (unique.length >= maxItems) {
+        break;
+      }
+    }
+
+    return unique;
+  }
+
+  private canonicalSuggestionStatement(statement: string): string {
+    return statement
+      .toLowerCase()
+      .replace(/\*\*/g, "")
+      .replace(/^potential finding:\s*/i, "")
+      .replace(/^hypothesis:\s*/i, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   private buildFallbackSynthesis(selected: Finding[], citations: Citation[]): string {

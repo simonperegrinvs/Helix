@@ -137,6 +137,7 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
           run={findingsRun.run}
           elapsedMs={findingsRun.elapsedMs}
           silenceMs={findingsRun.silenceMs}
+          hideRawTokens
           onCancel={findingsRun.cancel}
         />
 
@@ -198,6 +199,7 @@ export const FindingsSynthesisPage = ({ projectId }: { projectId: string }) => {
           run={synthesisRun.run}
           elapsedMs={synthesisRun.elapsedMs}
           silenceMs={synthesisRun.silenceMs}
+          hideRawTokens
           onCancel={synthesisRun.cancel}
         />
 

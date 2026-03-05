@@ -61,6 +61,7 @@ export const ExternalResearchPage = ({ projectId }: { projectId: string }) => {
           run={draftRun.run}
           elapsedMs={draftRun.elapsedMs}
           silenceMs={draftRun.silenceMs}
+          hideRawTokens
           onCancel={draftRun.cancel}
         />
       </div>
